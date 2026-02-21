@@ -19,55 +19,48 @@ const config = new Configuration({
 
 const client = new PlaidApi(config);
 
-// Create Link Token (for Plaid Link)
+// CREATE LINK TOKEN
 app.post("/create_link_token", async (req, res) => {
   try {
+    const { user_id } = req.body;
+
     const response = await client.linkTokenCreate({
-      user: { client_user_id: "flutterflow-user" },
+      user: { client_user_id: user_id },
       client_name: "FlutterFlow App",
-      products: ["auth"],
+      products: ["auth", "transactions"],
       country_codes: ["US"],
       language: "en",
     });
+
     res.json({ link_token: response.data.link_token });
+
   } catch (err) {
     console.error(err);
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
-// Exchange Public Token for Access Token
+// EXCHANGE PUBLIC TOKEN
 app.post("/exchange_public_token", async (req, res) => {
   try {
-    const { public_token } = req.body;
+    const { public_token, user_id } = req.body;
 
-    if (!public_token) {
-      return res.status(400).json({ success: false, error: "Missing public_token" });
-    }
-
-    const response = await client.itemPublicTokenExchange({ public_token });
-
-    // Return success + access_token (sandbox/testing only)
-    res.json({
-      success: true,
-      access_token: response.data.access_token
+    const response = await client.itemPublicTokenExchange({
+      public_token
     });
+
+    const access_token = response.data.access_token;
+
+    // 🔥 STORE access_token in database under user_id
+    console.log("User:", user_id);
+    console.log("Access Token:", access_token);
+
+    res.json({ success: true });
+
   } catch (err) {
     console.error(err);
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
-// Optional: Get Accounts
-app.get("/get_accounts", async (req, res) => {
-  try {
-    const access_token = "<RETRIEVE_ACCESS_TOKEN_FOR_USER_FROM_DB>";
-    const accountsResponse = await client.accountsGet({ access_token });
-    res.json({ success: true, accounts: accountsResponse.data.accounts });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-app.listen(3000, () => console.log("Server running on port 3000"));
+app.listen(3000, () => console.log("Server running"));
