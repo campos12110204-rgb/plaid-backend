@@ -1,14 +1,28 @@
+// server.js
 const express = require("express");
 const cors = require("cors");
 const { Configuration, PlaidApi, PlaidEnvironments } = require("plaid");
+const admin = require("firebase-admin");
+const serviceAccount = require("./serviceAccountKey.json"); // Your Firebase service account
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
+// ----------------------
+// Firebase / Firestore setup
+// ----------------------
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
+});
+
+const firestore = admin.firestore();
+
+// ----------------------
 // Plaid config
+// ----------------------
 const config = new Configuration({
-  basePath: PlaidEnvironments.sandbox,
+  basePath: PlaidEnvironments.sandbox, // Change to 'development' or 'production' as needed
   baseOptions: {
     headers: {
       "PLAID-CLIENT-ID": "691bf04834d0760024984be5",
@@ -19,7 +33,9 @@ const config = new Configuration({
 
 const client = new PlaidApi(config);
 
+// ----------------------
 // CREATE LINK TOKEN
+// ----------------------
 app.post("/create_link_token", async (req, res) => {
   try {
     const { user_id } = req.body;
@@ -40,20 +56,28 @@ app.post("/create_link_token", async (req, res) => {
   }
 });
 
+// ----------------------
 // EXCHANGE PUBLIC TOKEN
+// ----------------------
 app.post("/exchange_public_token", async (req, res) => {
   try {
     const { public_token, user_id } = req.body;
 
-    const response = await client.itemPublicTokenExchange({
-      public_token
-    });
-
+    // Exchange the public token for an access token
+    const response = await client.itemPublicTokenExchange({ public_token });
     const access_token = response.data.access_token;
 
-    // 🔥 STORE access_token in database under user_id
     console.log("User:", user_id);
     console.log("Access Token:", access_token);
+
+    // ✅ Store in Firestore: mark bank as connected
+    await firestore.collection("users").doc(user_id).set(
+      {
+        bankConnected: true,
+        accessToken: access_token // Optional: store access token
+      },
+      { merge: true } // merge: true ensures we don’t overwrite existing data
+    );
 
     res.json({ success: true });
 
@@ -63,4 +87,8 @@ app.post("/exchange_public_token", async (req, res) => {
   }
 });
 
-app.listen(3000, () => console.log("Server running"));
+// ----------------------
+// Start server
+// ----------------------
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
