@@ -86,7 +86,19 @@ app.post("/exchange_public_token", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
+// ----------------------
+// PLAID SUCCESS PAGE
+// ----------------------
+app.get("/plaid-success", (req, res) => {
+  res.send(`
+    <html>
+      <body style="text-align:center; font-family:sans-serif;">
+        <h2>✅ Bank Connected Successfully</h2>
+        <p>You may now return to the app.</p>
+      </body>
+    </html>
+  `);
+});
 // ----------------------
 // Start server
 // ----------------------
