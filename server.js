@@ -3,8 +3,8 @@ const express = require("express");
 const cors = require("cors");
 const { Configuration, PlaidApi, PlaidEnvironments } = require("plaid");
 const admin = require("firebase-admin");
-const serviceAccount = require("./serviceAccountKey.json"); // Your Firebase service account
-
+const path = require("path");
+const serviceAccount = require(path.join(__dirname, "serviceAccountKey.json"));
 const app = express();
 app.use(cors());
 app.use(express.json());
