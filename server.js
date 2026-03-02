@@ -35,11 +35,11 @@ const client = new PlaidApi(config);
 
 // ----------------------
 // CREATE LINK TOKEN
-// ----------------------
 app.post("/create_link_token", async (req, res) => {
+  console.log("🔥 create_link_token HIT", new Date().toISOString(), req.body);
+
   try {
     const { user_id } = req.body;
-
     const response = await client.linkTokenCreate({
       user: { client_user_id: user_id },
       client_name: "FlutterFlow App",
@@ -48,38 +48,30 @@ app.post("/create_link_token", async (req, res) => {
       language: "en",
     });
 
+    console.log("Link token created for user:", user_id);
     res.json({ link_token: response.data.link_token });
-
   } catch (err) {
-    console.error(err);
+    console.error("Error creating link token:", err.response?.data || err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// ----------------------
 // EXCHANGE PUBLIC TOKEN
-// ----------------------
 app.post("/exchange_public_token", async (req, res) => {
+  console.log("🔥 exchange_public_token HIT", new Date().toISOString(), req.body);
+
   try {
-    console.log("Incoming request:", req.body);
-
     const { public_token, user_id } = req.body;
-
     if (!public_token || !user_id) {
       return res.status(400).json({ error: "Missing public_token or user_id" });
     }
 
-    // Exchange token
-    const response = await client.itemPublicTokenExchange({
-      public_token
-    });
-
+    const response = await client.itemPublicTokenExchange({ public_token });
     const access_token = response.data.access_token;
     const item_id = response.data.item_id;
 
-    console.log("Plaid exchange successful for user:", user_id);
+    console.log("Plaid exchange successful for user:", user_id, access_token);
 
-    // Store in Firestore
     await firestore.collection("users").doc(user_id).set({
       bankConnected: true,
       plaidAccessToken: access_token,
@@ -87,13 +79,11 @@ app.post("/exchange_public_token", async (req, res) => {
       bankConnectedAt: admin.firestore.FieldValue.serverTimestamp()
     }, { merge: true });
 
-    console.log("Firestore updated successfully");
-
+    console.log("✅ Firestore updated successfully for user:", user_id);
     res.json({ success: true });
-
   } catch (err) {
     console.error("Exchange error:", err.response?.data || err.message);
-    res.status(500).json({ error: "Token exchange failed" });
+    res.status(500).json({ error: err.response?.data || err.message });
   }
 });
 // ----------------------
