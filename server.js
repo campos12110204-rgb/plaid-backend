@@ -61,29 +61,39 @@ app.post("/create_link_token", async (req, res) => {
 // ----------------------
 app.post("/exchange_public_token", async (req, res) => {
   try {
+    console.log("Incoming request:", req.body);
+
     const { public_token, user_id } = req.body;
 
-    // Exchange the public token for an access token
-    const response = await client.itemPublicTokenExchange({ public_token });
+    if (!public_token || !user_id) {
+      return res.status(400).json({ error: "Missing public_token or user_id" });
+    }
+
+    // Exchange token
+    const response = await client.itemPublicTokenExchange({
+      public_token
+    });
+
     const access_token = response.data.access_token;
+    const item_id = response.data.item_id;
 
-    console.log("User:", user_id);
-    console.log("Access Token:", access_token);
+    console.log("Plaid exchange successful for user:", user_id);
 
-    // ✅ Store in Firestore: mark bank as connected
-    await firestore.collection("users").doc(user_id).set(
-      {
-        bankConnected: true,
-        accessToken: access_token // Optional: store access token
-      },
-      { merge: true } // merge: true ensures we don’t overwrite existing data
-    );
+    // Store in Firestore
+    await firestore.collection("users").doc(user_id).set({
+      bankConnected: true,
+      plaidAccessToken: access_token,
+      plaidItemId: item_id,
+      bankConnectedAt: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+
+    console.log("Firestore updated successfully");
 
     res.json({ success: true });
 
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
+    console.error("Exchange error:", err.response?.data || err.message);
+    res.status(500).json({ error: "Token exchange failed" });
   }
 });
 // ----------------------
