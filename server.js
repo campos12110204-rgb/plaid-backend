@@ -3,7 +3,10 @@ const cors = require("cors");
 const { Configuration, PlaidApi, PlaidEnvironments } = require("plaid");
 const admin = require("firebase-admin");
 const path = require("path");
-
+// Serve the Plaid Link HTML file
+app.get("/plaid-link", (req, res) => {
+  res.sendFile(path.join(__dirname, "index.html"));
+});
 const serviceAccount = require(path.join(__dirname, "serviceAccountKey.json"));
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
