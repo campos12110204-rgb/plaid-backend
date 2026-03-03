@@ -5,9 +5,25 @@ const { Configuration, PlaidApi, PlaidEnvironments } = require("plaid");
 const admin = require("firebase-admin");
 const path = require("path");
 const serviceAccount = require(path.join(__dirname, "serviceAccountKey.json"));
+const express = require('express');
 const app = express();
-app.use(cors());
+
 app.use(express.json());
+
+// 👇 ADD IT HERE
+app.get('/', (req, res) => {
+  res.status(200).send('Plaid backend is running');
+});
+
+// Your existing route
+app.post('/create_link_token', async (req, res) => {
+  // your plaid logic
+});
+
+// 👇 make sure it is ABOVE this
+app.listen(process.env.PORT || 3000, () => {
+  console.log('Server started');
+});
 
 // ----------------------
 // Firebase / Firestore setup
