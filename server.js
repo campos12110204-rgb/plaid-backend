@@ -3,20 +3,25 @@ const cors = require("cors");
 const { Configuration, PlaidApi, PlaidEnvironments } = require("plaid");
 const admin = require("firebase-admin");
 const path = require("path");
+
+// Initialize Express app FIRST
+const app = express();
+app.use(cors());
+app.use(express.json());
+
 // Serve the Plaid Link HTML file
 app.get("/plaid-link", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
+
+// Firebase setup
 const serviceAccount = require(path.join(__dirname, "serviceAccountKey.json"));
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
 });
 const firestore = admin.firestore();
 
-const app = express();
-app.use(cors());
-app.use(express.json());
-
+// Plaid config
 const config = new Configuration({
   basePath: PlaidEnvironments.sandbox,
   baseOptions: {
@@ -85,5 +90,6 @@ app.get("/plaid-success", (req, res) => {
   `);
 });
 
+// Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
