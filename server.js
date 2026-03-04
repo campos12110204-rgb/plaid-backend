@@ -13,7 +13,7 @@ app.use(express.static(__dirname)); // Serve static files
    FIREBASE SETUP
 ========================= */
 // Load service account JSON directly (no env variable needed)
-const serviceAccount = require("./serviceAccount.json"); // <-- put your service account JSON file here
+const serviceAccount = require("./serviceAccountKey.json"); // <-- put your service account JSON file here
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
