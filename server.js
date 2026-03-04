@@ -13,10 +13,16 @@ app.use(express.static(__dirname)); // Serve static files
    FIREBASE SETUP
 ========================= */
 // Load service account JSON directly (no env variable needed)
-const serviceAccount = require("./serviceAccount.json"); // <-- put your service account JSON file here
+const admin = require("firebase-admin");
+
+const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
 
 admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
+  credential: admin.credential.cert({
+    projectId: serviceAccount.project_id,
+    clientEmail: serviceAccount.client_email,
+    privateKey: serviceAccount.private_key.replace(/\\n/g, '\n'),
+  }),
 });
 
 const firestore = admin.firestore();
