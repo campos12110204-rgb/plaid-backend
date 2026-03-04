@@ -4,24 +4,28 @@ const { Configuration, PlaidApi, PlaidEnvironments } = require("plaid");
 const admin = require("firebase-admin");
 const path = require("path");
 
-// Initialize Express app FIRST
 const app = express();
+
 app.use(cors());
 app.use(express.json());
 
-// Serve the Plaid Link HTML file
-app.get("/plaid-link", (req, res) => {
-  res.sendFile(path.join(__dirname, "index.html"));
-});
+// ✅ SERVE STATIC FILES (VERY IMPORTANT)
+app.use(express.static(__dirname));
 
-// Firebase setup
+/* =========================
+   FIREBASE SETUP
+========================= */
 const serviceAccount = require(path.join(__dirname, "serviceAccountKey.json"));
+
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
 });
+
 const firestore = admin.firestore();
 
-// Plaid config
+/* =========================
+   PLAID CONFIG
+========================= */
 const config = new Configuration({
   basePath: PlaidEnvironments.sandbox,
   baseOptions: {
@@ -31,15 +35,23 @@ const config = new Configuration({
     },
   },
 });
+
 const client = new PlaidApi(config);
 
-// Health check
-app.get('/', (req, res) => res.status(200).send('Plaid backend is running'));
+/* =========================
+   HEALTH CHECK
+========================= */
+app.get("/", (req, res) => {
+  res.status(200).send("Plaid backend is running");
+});
 
-// CREATE LINK TOKEN
+/* =========================
+   CREATE LINK TOKEN
+========================= */
 app.post("/create_link_token", async (req, res) => {
   try {
     const { user_id } = req.body;
+
     const response = await client.linkTokenCreate({
       user: { client_user_id: user_id },
       client_name: "FlutterFlow App",
@@ -47,38 +59,54 @@ app.post("/create_link_token", async (req, res) => {
       country_codes: ["US"],
       language: "en",
     });
+
     res.json({ link_token: response.data.link_token });
+
   } catch (err) {
-    console.error(err.response?.data || err.message);
+    console.error("Link token error:", err.response?.data || err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// EXCHANGE PUBLIC TOKEN
+/* =========================
+   EXCHANGE PUBLIC TOKEN
+========================= */
 app.post("/exchange_public_token", async (req, res) => {
   try {
     const { public_token, user_id } = req.body;
-    if (!public_token || !user_id) return res.status(400).json({ error: "Missing public_token or user_id" });
 
-    const response = await client.itemPublicTokenExchange({ public_token });
+    if (!public_token || !user_id) {
+      return res.status(400).json({ error: "Missing public_token or user_id" });
+    }
+
+    const response = await client.itemPublicTokenExchange({
+      public_token,
+    });
+
     const access_token = response.data.access_token;
     const item_id = response.data.item_id;
 
-    await firestore.collection("users").doc(user_id).set({
-      bankConnected: true,
-      plaidAccessToken: access_token,
-      plaidItemId: item_id,
-      bankConnectedAt: admin.firestore.FieldValue.serverTimestamp()
-    }, { merge: true });
+    await firestore.collection("users").doc(user_id).set(
+      {
+        bankConnected: true,
+        plaidAccessToken: access_token,
+        plaidItemId: item_id,
+        bankConnectedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
 
     res.json({ success: true });
+
   } catch (err) {
-    console.error(err.response?.data || err.message);
+    console.error("Exchange error:", err.response?.data || err.message);
     res.status(500).json({ error: err.response?.data || err.message });
   }
 });
 
-// PLAID SUCCESS PAGE
+/* =========================
+   SUCCESS PAGE
+========================= */
 app.get("/plaid-success", (req, res) => {
   res.send(`
     <html>
@@ -90,6 +118,11 @@ app.get("/plaid-success", (req, res) => {
   `);
 });
 
-// Start server
+/* =========================
+   START SERVER
+========================= */
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
+app.listen(PORT, () => {
+  console.log("Server running on port " + PORT);
+});
