@@ -19,6 +19,7 @@ app.use(express.static(__dirname));
 // server.js
 if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
   throw new Error("FIREBASE_SERVICE_ACCOUNT is not set");
+}
 const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
 
 const serviceAccount = JSON.parse(raw);
