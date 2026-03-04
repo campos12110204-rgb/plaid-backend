@@ -11,7 +11,7 @@ app.use(express.json());
 
 // Serve the Plaid Link HTML file
 app.get("/plaid-link", (req, res) => {
-  res.sendFile(path.join(__dirname, "plaid.html"));
+  res.sendFile(path.join(__dirname, "index.html"));
 });
 
 // Firebase setup
