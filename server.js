@@ -63,18 +63,23 @@ app.post("/create_link_token", async (req, res) => {
   try {
     const { user_id } = req.body;
 
+    if (!user_id) {
+      return res.status(400).json({ error: "Missing user_id" });
+    }
+
     const response = await client.linkTokenCreate({
       user: { client_user_id: user_id },
       client_name: "FlutterFlow App",
       products: ["auth", "transactions"],
       country_codes: ["US"],
       language: "en",
+      redirect_uri: "https://plaid-backend-1.onrender.com/plaid-success"
     });
 
     res.json({ link_token: response.data.link_token });
 
   } catch (err) {
-    console.error("Link token error:", err.response?.data || err.message);
+    console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
