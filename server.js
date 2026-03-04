@@ -73,7 +73,7 @@ app.post("/create_link_token", async (req, res) => {
       products: ["auth", "transactions"],
       country_codes: ["US"],
       language: "en",
-      redirect_uri: "https://plaid-backend-1.onrender.com/index.html"
+        redirect_uri: "https://plaid-backend-1.onrender.com/plaid-success"
     });
 
     res.json({ link_token: response.data.link_token });
