@@ -16,10 +16,13 @@ app.use(express.static(__dirname));
    FIREBASE SETUP
 ========================= */
 // Load Firebase service account from environment variable
-const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+// server.js
+const serviceAccount = JSON.parse(
+  process.env.FIREBASE_SERVICE_ACCOUNT.replace(/\\n/g, '\n')
+);
 
 admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
+  credential: admin.credential.cert(serviceAccount),
 });
 
 const firestore = admin.firestore();
