@@ -17,12 +17,16 @@ app.use(express.static(__dirname));
 ========================= */
 // Load Firebase service account from environment variable
 // server.js
-const serviceAccount = JSON.parse(
-  process.env.FIREBASE_SERVICE_ACCOUNT.replace(/\\n/g, '\n')
-);
+const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
+
+const serviceAccount = JSON.parse(raw);
 
 admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
+  credential: admin.credential.cert({
+    projectId: serviceAccount.project_id,
+    clientEmail: serviceAccount.client_email,
+    privateKey: serviceAccount.private_key.replace(/\\n/g, '\n'),
+  }),
 });
 
 const firestore = admin.firestore();
