@@ -89,15 +89,32 @@ app.post("/exchange_public_token", async (req, res) => {
     const access_token = response.data.access_token;
     const item_id = response.data.item_id;
 
-    await firestore.collection("users").doc(user_id).set(
-      {
-        bankConnected: true,
-        plaidAccessToken: access_token,
-        plaidItemId: item_id,
-        bankConnectedAt: admin.firestore.FieldValue.serverTimestamp(),
-      },
-      { merge: true }
-    );
+    // Call Plaid balance endpoint immediately after exchanging token
+const balanceResponse = await client.accountsBalanceGet({
+  access_token: access_token,
+});
+
+// Build balance object
+const balances = balanceResponse.data.accounts.map(account => ({
+  account_id: account.account_id,
+  name: account.name,
+  available: account.balances.available,
+  current: account.balances.current,
+  subtype: account.subtype,
+  type: account.type
+}));
+
+// Save access token + balances in Firestore
+await firestore.collection("users").doc(user_id).set(
+  {
+    bankConnected: true,
+    plaidAccessToken: access_token,
+    plaidItemId: item_id,
+    balances: balances, // <-- new field
+    bankConnectedAt: admin.firestore.FieldValue.serverTimestamp(),
+  },
+  { merge: true }
+);
 
     res.json({ success: true });
   } catch (err) {
