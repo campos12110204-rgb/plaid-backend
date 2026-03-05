@@ -125,6 +125,7 @@ app.get("/plaid-success", (req, res) => {
 app.post("/get-balance", async (req, res) => {
   try {
     const { user_id } = req.body;
+    console.log("Received user_id:", user_id);
 
     if (!user_id) {
       return res.status(400).json({ error: "Missing user_id" });
@@ -132,12 +133,14 @@ app.post("/get-balance", async (req, res) => {
 
     // Get user from Firestore
     const userDoc = await firestore.collection("users").doc(user_id).get();
+    console.log("Firestore doc exists:", userDoc.exists);
 
     if (!userDoc.exists) {
       return res.status(404).json({ error: "User not found" });
     }
 
     const accessToken = userDoc.data().plaidAccessToken;
+    console.log("Plaid Access Token:", accessToken);
 
     if (!accessToken) {
       return res.status(400).json({ error: "No Plaid access token found" });
@@ -147,6 +150,8 @@ app.post("/get-balance", async (req, res) => {
     const balanceResponse = await client.accountsBalanceGet({
       access_token: accessToken,
     });
+
+    console.log("Plaid balance response:", JSON.stringify(balanceResponse.data, null, 2));
 
     res.json(balanceResponse.data);
 
