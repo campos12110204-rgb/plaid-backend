@@ -119,6 +119,42 @@ app.get("/plaid-success", (req, res) => {
     </html>
   `);
 });
+/* =========================
+   GET ACCOUNT BALANCE
+========================= */
+app.post("/get-balance", async (req, res) => {
+  try {
+    const { user_id } = req.body;
+
+    if (!user_id) {
+      return res.status(400).json({ error: "Missing user_id" });
+    }
+
+    // Get user from Firestore
+    const userDoc = await firestore.collection("users").doc(user_id).get();
+
+    if (!userDoc.exists) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const accessToken = userDoc.data().plaidAccessToken;
+
+    if (!accessToken) {
+      return res.status(400).json({ error: "No Plaid access token found" });
+    }
+
+    // Call Plaid balance endpoint
+    const balanceResponse = await client.accountsBalanceGet({
+      access_token: accessToken,
+    });
+
+    res.json(balanceResponse.data);
+
+  } catch (err) {
+    console.error("Balance error:", err.response?.data || err.message);
+    res.status(500).json({ error: err.response?.data || err.message });
+  }
+});
 
 /* =========================
    START SERVER
