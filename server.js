@@ -13,7 +13,9 @@ app.use(express.static(__dirname)); // Serve static files
    FIREBASE SETUP
 ========================= */
 // Load service account JSON directly (no env variable needed)
-const admin = require("firebase-admin");
+/* =========================
+   FIREBASE SETUP
+========================= */
 
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
 
