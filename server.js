@@ -113,6 +113,7 @@ await firestore.collection("users").doc(user_id).set(
     plaidItemId: item_id,
     balances: balances,
     actualBalance: actualBalance, // <-- now saved
+    savingsBalance: 0, // <-- initialize to 0
     bankConnectedAt: admin.firestore.FieldValue.serverTimestamp(),
   },
   { merge: true }
