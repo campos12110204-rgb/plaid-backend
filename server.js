@@ -103,14 +103,16 @@ const balances = balanceResponse.data.accounts.map(account => ({
   subtype: account.subtype,
   type: account.type
 }));
-
+// Extract the first account’s available balance
+const actualBalance = balances.length > 0 ? balances[0].available : 0;
 // Save access token + balances in Firestore
 await firestore.collection("users").doc(user_id).set(
   {
     bankConnected: true,
     plaidAccessToken: access_token,
     plaidItemId: item_id,
-    balances: balances, // <-- new field
+    balances: balances,
+    actualBalance: actualBalance, // <-- now saved
     bankConnectedAt: admin.firestore.FieldValue.serverTimestamp(),
   },
   { merge: true }
