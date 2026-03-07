@@ -2,8 +2,9 @@
   "name": "plaid-backend",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "server.js",
   "scripts": {
+    "start": "node server.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -14,6 +15,8 @@
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "firebase-admin": "^13.7.0",
-    "plaid": "^41.3.0"
+    "plaid": "^41.3.0",
+    "stripe": "^12.11.0",
+    "body-parser": "^1.20.2"
   }
 }
