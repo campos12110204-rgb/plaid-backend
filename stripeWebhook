@@ -1,25 +1,49 @@
-const functions = require("firebase-functions");
-const admin = require("firebase-admin");
-admin.initializeApp();
+/* =========================
+   STRIPE WEBHOOK
+========================= */
 const Stripe = require("stripe");
-const stripe = new Stripe(functions.config().stripe.secret); // Set your Stripe secret in Firebase config
+const stripe = new Stripe(process.env.STRIPE_SECRET); // set your Stripe secret in Render env
 
-exports.stripeWebhook = functions.https.onRequest(async (req, res) => {
-  const event = req.body;
+// Use raw body for signature verification
+const bodyParser = require("body-parser");
 
-  // Verify event if needed (optional in test mode)
-  // const sig = req.headers['stripe-signature'];
+// Stripe requires raw body for webhook verification
+app.post(
+  "/stripe-webhook",
+  bodyParser.raw({ type: "application/json" }),
+  async (req, res) => {
+    let event;
 
-  if(event.type === 'payment_intent.succeeded'){
-    const paymentIntent = event.data.object;
-    const userId = paymentIntent.metadata.userId; // store userId when creating PaymentIntent
-    const amount = paymentIntent.amount; // in cents
+    try {
+      event = JSON.parse(req.body.toString()); // simple parse (no signature verification for test)
 
-    await admin.firestore().collection('users').doc(userId)
-      .update({
-        balance: admin.firestore.FieldValue.increment(amount / 100) // cents → dollars
-      });
+      if (event.type === "payment_intent.succeeded") {
+        const paymentIntent = event.data.object;
+        const userId = paymentIntent.metadata.userId; // make sure you pass this in FlutterFlow
+        const amount = paymentIntent.amount; // amount in cents
+
+        // Update Firestore user balance
+        await firestore
+          .collection("users")
+          .doc(userId)
+          .update({
+            balance: admin.firestore.FieldValue.increment(amount / 100),
+          });
+
+        console.log(
+          `Updated balance for ${userId}: +${amount / 100} USD`
+        );
+      }
+
+      res.status(200).send("ok");
+    } catch (err) {
+      console.error("Stripe webhook error:", err);
+      res.status(400).send(`Webhook error: ${err.message}`);
+    }
   }
+);
 
-  res.status(200).send('ok');
+// Optional: simple GET route for testing
+app.get("/stripe-webhook", (req, res) => {
+  res.send("Stripe webhook endpoint is live. POST only!");
 });
