@@ -1,0 +1,25 @@
+const functions = require("firebase-functions");
+const admin = require("firebase-admin");
+admin.initializeApp();
+const Stripe = require("stripe");
+const stripe = new Stripe(functions.config().stripe.secret); // Set your Stripe secret in Firebase config
+
+exports.stripeWebhook = functions.https.onRequest(async (req, res) => {
+  const event = req.body;
+
+  // Verify event if needed (optional in test mode)
+  // const sig = req.headers['stripe-signature'];
+
+  if(event.type === 'payment_intent.succeeded'){
+    const paymentIntent = event.data.object;
+    const userId = paymentIntent.metadata.userId; // store userId when creating PaymentIntent
+    const amount = paymentIntent.amount; // in cents
+
+    await admin.firestore().collection('users').doc(userId)
+      .update({
+        balance: admin.firestore.FieldValue.increment(amount / 100) // cents → dollars
+      });
+  }
+
+  res.status(200).send('ok');
+});
