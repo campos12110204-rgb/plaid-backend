@@ -4,20 +4,20 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>DailySave – Automated Savings App</title>
-
+<title>Daily Savings App</title>
 <style>
 body{
-font-family: Arial, Helvetica, sans-serif;
+font-family: Arial, sans-serif;
 margin:0;
-background:#f5f7fb;
-color:#222;
+padding:0;
+background:#f7f7f7;
+color:#333;
 }
 
 header{
-background:#0f62fe;
+background:#0a2540;
 color:white;
-padding:40px 20px;
+padding:40px;
 text-align:center;
 }
 
@@ -25,101 +25,121 @@ section{
 max-width:900px;
 margin:auto;
 padding:40px 20px;
-}
-
-h1{
-margin:0;
-font-size:40px;
-}
-
-h2{
-margin-top:40px;
-color:#0f62fe;
-}
-
-.card{
 background:white;
-padding:25px;
-border-radius:10px;
-box-shadow:0 4px 10px rgba(0,0,0,0.08);
 margin-top:20px;
+border-radius:8px;
+box-shadow:0 2px 6px rgba(0,0,0,0.1);
+}
+
+h1,h2{
+color:#0a2540;
 }
 
 footer{
 text-align:center;
 padding:30px;
 font-size:14px;
-color:#777;
+color:#666;
 }
-</style>
+
+ul{
+line-height:1.7;
+}
+
+.highlight{
+background:#eef4ff;
+padding:15px;
+border-left:4px solid #4f7cff;
+margin-top:15px;
+} </style>
 
 </head>
 
 <body>
 
 <header>
-<h1>DailySave</h1>
-<p>Automated Daily Savings Made Simple</p>
+<h1>Goals DailySavings App</h1>
+<p>A mobile application designed to help users build savings automatically through daily recurring contributions.</p>
 </header>
 
 <section>
-
-<div class="card">
-<h2>About DailySave</h2>
+<h2>About the App</h2>
 <p>
-DailySave is a mobile application that helps users build better saving habits by automatically
-setting aside small amounts of money each day.
+This application is a financial savings tool designed to help users grow their savings through automated daily contributions.
+Users can choose a daily savings amount within the mobile app, and the system automatically tracks and manages those savings.
 </p>
 
-<p>
-Users choose a daily savings amount inside the app, and DailySave automatically transfers
-that amount into a savings balance to help users reach their financial goals.
-</p>
-</div>
-
-<div class="card">
-<h2>How It Works</h2>
-
-<p>1. Connect your bank account securely.</p>
-<p>2. Choose a daily savings amount using a slider in the app.</p>
-<p>3. DailySave automatically saves that amount every day.</p>
-<p>4. Watch your savings grow over time.</p>
-
-</div>
-
-<div class="card">
-<h2>Security</h2>
-
-<p>
-DailySave uses secure financial technology integrations to connect bank accounts and process
-transactions safely. User data and financial information are handled with strict security
-standards.
-</p>
-
-</div>
-
-<div class="card">
-<h2>Platform</h2>
-
-<p>
-DailySave is currently being developed as a mobile application built with FlutterFlow.
-This website exists to provide information about the service while the mobile app
-is under development.
-</p>
-
-</div>
-
-<div class="card">
-<h2>Contact</h2>
-
-<p>Email: support@dailysave.app</p>
-
+<div class="highlight">
+<strong>Goal:</strong> Help users consistently save money through small automated daily deposits.
 </div>
 
 </section>
 
+<section>
+<h2>How Bank Connections Work</h2>
+<p>
+To provide a secure connection to a user's financial account, this application uses the Plaid banking integration platform.
+</p>
+
+<ul>
+<li>Users securely connect their bank account using Plaid.</li>
+<li>Plaid handles authentication directly with the bank.</li>
+<li>The app never receives or stores banking login credentials.</li>
+<li>Plaid returns account balance information securely.</li>
+<li>The app uses this balance data to help manage automated savings features.</li>
+</ul>
+
+<p>
+All financial data access is handled securely through Plaid's API infrastructure.
+</p>
+
+</section>
+
+<section>
+<h2>Application Technology</h2>
+
+<p>This mobile application was built using modern cloud technologies:</p>
+
+<ul>
+<li><strong>FlutterFlow</strong> – Used to design and build the mobile application interface.</li>
+<li><strong>Firebase</strong> – Provides authentication, database storage, and secure cloud services.</li>
+<li><strong>GitHub</strong> – Used for version control and hosting project files.</li>
+<li><strong>Render</strong> – Hosts the secure backend server used for API communication.</li>
+</ul>
+
+<p>
+The backend server processes financial data requests and communicates securely with Plaid's API services.
+</p>
+
+</section>
+
+<section>
+<h2>Security and Data Handling</h2>
+
+<ul>
+<li>User authentication is managed through Firebase Authentication.</li>
+<li>Bank connections are securely handled through Plaid.</li>
+<li>Sensitive financial credentials are never stored on the application servers.</li>
+<li>Encrypted HTTPS communication is used for all data transfers.</li>
+</ul>
+
+</section>
+
+<section>
+<h2>Contact Information</h2>
+
+<p>
+If you have any questions regarding the application, please contact:
+</p>
+
+<p>
+<strong>Email:</strong> campos12110204@gmail.com
+</p>
+
+</section>
+
 <footer>
-© 2026 DailySave. All rights reserved.
+<p>© 2026 Daily Savings App. All rights reserved.</p>
 </footer>
 
 </body>
