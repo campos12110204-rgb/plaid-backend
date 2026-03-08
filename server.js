@@ -12,14 +12,12 @@ const Stripe = require("stripe");
    APP SETUP
 ========================= */
 const app = express();
-
 app.use(cors());
 app.use(express.json());
 
 /* =========================
    FIREBASE SETUP
 ========================= */
-
 if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
   throw new Error("Missing FIREBASE_SERVICE_ACCOUNT env variable");
 }
@@ -39,7 +37,6 @@ const firestore = admin.firestore();
 /* =========================
    PLAID CONFIG
 ========================= */
-
 const plaidClient = new PlaidApi(
   new Configuration({
     basePath: PlaidEnvironments.sandbox, // change to production later
@@ -55,14 +52,12 @@ const plaidClient = new PlaidApi(
 /* =========================
    STRIPE CONFIG
 ========================= */
-
 const stripe = new Stripe(process.env.STRIPE_SECRET);
 const stripeWebhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
 /* =========================
    HEALTH CHECK
 ========================= */
-
 app.get("/", (req, res) => {
   res.json({
     status: "running",
@@ -78,14 +73,11 @@ app.get("/", (req, res) => {
 app.post("/create_link_token", async (req, res) => {
   try {
     const { user_id } = req.body;
-
-    if (!user_id) {
-      return res.status(400).json({ error: "Missing user_id" });
-    }
+    if (!user_id) return res.status(400).json({ error: "Missing user_id" });
 
     const response = await plaidClient.linkTokenCreate({
       user: { client_user_id: user_id },
-      client_name: "My Fintech App",
+      client_name: "My Savings App",
       products: ["auth", "transactions"],
       country_codes: ["US"],
       language: "en",
@@ -103,23 +95,14 @@ app.post("/create_link_token", async (req, res) => {
 app.post("/exchange_public_token", async (req, res) => {
   try {
     const { public_token, user_id } = req.body;
-
-    if (!public_token || !user_id) {
+    if (!public_token || !user_id)
       return res.status(400).json({ error: "Missing data" });
-    }
 
-    const response = await plaidClient.itemPublicTokenExchange({
-      public_token,
-    });
-
+    const response = await plaidClient.itemPublicTokenExchange({ public_token });
     const access_token = response.data.access_token;
     const item_id = response.data.item_id;
 
-    /* Get balances */
-    const balanceResponse = await plaidClient.accountsBalanceGet({
-      access_token,
-    });
-
+    const balanceResponse = await plaidClient.accountsBalanceGet({ access_token });
     const balances = balanceResponse.data.accounts.map((account) => ({
       account_id: account.account_id,
       name: account.name,
@@ -130,11 +113,8 @@ app.post("/exchange_public_token", async (req, res) => {
     }));
 
     const actualBalance =
-      balances.length > 0
-        ? balances[0].available ?? balances[0].current
-        : 0;
+      balances.length > 0 ? balances[0].available ?? balances[0].current : 0;
 
-    /* Save user data */
     await firestore.collection("users").doc(user_id).set(
       {
         bankConnected: true,
@@ -159,23 +139,13 @@ app.post("/exchange_public_token", async (req, res) => {
 app.post("/get-balance", async (req, res) => {
   try {
     const { user_id } = req.body;
-
     const userDoc = await firestore.collection("users").doc(user_id).get();
-
-    if (!userDoc.exists) {
-      return res.status(404).json({ error: "User not found" });
-    }
+    if (!userDoc.exists) return res.status(404).json({ error: "User not found" });
 
     const accessToken = userDoc.data().plaidAccessToken;
+    if (!accessToken) return res.status(400).json({ error: "Bank not connected" });
 
-    if (!accessToken) {
-      return res.status(400).json({ error: "Bank not connected" });
-    }
-
-    const balanceResponse = await plaidClient.accountsBalanceGet({
-      access_token: accessToken,
-    });
-
+    const balanceResponse = await plaidClient.accountsBalanceGet({ access_token: accessToken });
     res.json(balanceResponse.data);
   } catch (err) {
     console.error("Balance error:", err.response?.data || err.message);
@@ -187,11 +157,10 @@ app.post("/get-balance", async (req, res) => {
 app.post("/get-transactions", async (req, res) => {
   try {
     const { user_id } = req.body;
-
     const userDoc = await firestore.collection("users").doc(user_id).get();
+    if (!userDoc.exists) return res.status(404).json({ error: "User not found" });
 
     const accessToken = userDoc.data().plaidAccessToken;
-
     const transactionsResponse = await plaidClient.transactionsGet({
       access_token: accessToken,
       start_date: "2024-01-01",
@@ -206,23 +175,68 @@ app.post("/get-transactions", async (req, res) => {
 });
 
 /* =========================
+   DEPOSIT ENDPOINT (ACH)
+========================= */
+app.post("/deposit", async (req, res) => {
+  try {
+    const { user_id, amount } = req.body;
+    if (!user_id || !amount) return res.status(400).json({ error: "Missing data" });
+
+    const userDoc = await firestore.collection("users").doc(user_id).get();
+    if (!userDoc.exists) return res.status(404).json({ error: "User not found" });
+
+    const accessToken = userDoc.data().plaidAccessToken;
+    if (!accessToken) return res.status(400).json({ error: "Bank not connected" });
+
+    const accountId = userDoc.data().balances[0].account_id;
+
+    // Plaid processor token for Stripe
+    const processorTokenResp = await plaidClient.processorTokenCreate({
+      access_token: accessToken,
+      account_id: accountId,
+      processor: "stripe",
+    });
+
+    const stripeBankToken = processorTokenResp.data.processor_token;
+
+    // Create Stripe customer if not exists
+    let stripeCustomerId = userDoc.data().stripeCustomerId;
+    if (!stripeCustomerId) {
+      const customer = await stripe.customers.create({ metadata: { userId: user_id } });
+      stripeCustomerId = customer.id;
+      await firestore.collection("users").doc(user_id).update({ stripeCustomerId });
+    }
+
+    // Create Stripe PaymentIntent (ACH transfer)
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: Math.round(amount * 100),
+      currency: "usd",
+      payment_method: stripeBankToken,
+      customer: stripeCustomerId,
+      off_session: true,
+      confirm: true,
+      metadata: { userId: user_id },
+    });
+
+    res.json({ success: true, paymentIntentId: paymentIntent.id });
+  } catch (err) {
+    console.error("Deposit error:", err.response?.data || err.message || err);
+    res.status(500).json({ error: "Deposit failed" });
+  }
+});
+
+/* =========================
    STRIPE WEBHOOK
 ========================= */
-
 app.post(
   "/stripe-webhook",
   bodyParser.raw({ type: "application/json" }),
   async (req, res) => {
     const sig = req.headers["stripe-signature"];
-
     let event;
 
     try {
-      event = stripe.webhooks.constructEvent(
-        req.body,
-        sig,
-        stripeWebhookSecret
-      );
+      event = stripe.webhooks.constructEvent(req.body, sig, stripeWebhookSecret);
     } catch (err) {
       console.error("Stripe signature error:", err.message);
       return res.status(400).send(`Webhook Error: ${err.message}`);
@@ -231,15 +245,14 @@ app.post(
     try {
       if (event.type === "payment_intent.succeeded") {
         const paymentIntent = event.data.object;
-
         const userId = paymentIntent.metadata.userId;
         const amount = paymentIntent.amount / 100;
 
         await firestore.collection("users").doc(userId).update({
-          balance: admin.firestore.FieldValue.increment(amount),
+          savingsBalance: admin.firestore.FieldValue.increment(amount),
         });
 
-        console.log(`User ${userId} balance updated +$${amount}`);
+        console.log(`User ${userId} savings updated +$${amount}`);
       }
 
       res.status(200).send("ok");
@@ -257,7 +270,6 @@ app.get("/stripe-webhook", (req, res) => {
 /* =========================
    PLAID SUCCESS PAGE
 ========================= */
-
 app.get("/plaid-success", (req, res) => {
   res.send(`
     <html>
@@ -272,9 +284,5 @@ app.get("/plaid-success", (req, res) => {
 /* =========================
    START SERVER
 ========================= */
-
 const PORT = process.env.PORT || 3000;
-
-app.listen(PORT, () => {
-  console.log("Server running on port " + PORT);
-});
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
