@@ -141,22 +141,30 @@ app.post("/deposit", async (req, res) => {
       return res.status(400).json({ error: "Missing user_id or amount" });
     }
 
-    // Get user from Firestore
-    const userDoc = await firestore.collection("users").doc(user_id).get();
+    // Get user from Firebase
+    const userDoc = await db.collection("users").doc(user_id).get();
+
     if (!userDoc.exists) {
       return res.status(404).json({ error: "User not found" });
     }
 
-    const accessToken = userDoc.data().plaidAccessToken;
-    if (!accessToken) {
-      return res.status(400).json({ error: "Bank not connected" });
+    const userData = userDoc.data();
+    const accessToken = userData.plaid_access_token;
+    const stripeCustomerId = userData.stripe_customer_id;
+
+    if (!accessToken || !stripeCustomerId) {
+      return res.status(400).json({ error: "User not fully connected" });
     }
 
-    // Use the first linked account
-    const accountId = userDoc.data().balances[0].account_id;
+    // Get accounts from Plaid
+    const accountsResp = await plaidClient.accountsGet({
+      access_token: accessToken,
+    });
 
-    // Create Plaid processor token for Stripe
-    const processorTokenResp = await client.processorTokenCreate({
+    const accountId = accountsResp.data.accounts[0].account_id;
+
+    // Create Stripe processor token via Plaid
+    const processorTokenResp = await plaidClient.processorTokenCreate({
       access_token: accessToken,
       account_id: accountId,
       processor: "stripe",
@@ -164,31 +172,32 @@ app.post("/deposit", async (req, res) => {
 
     const stripeBankToken = processorTokenResp.data.processor_token;
 
-    // Create Stripe customer if not exists
-    let stripeCustomerId = userDoc.data().stripeCustomerId;
-    if (!stripeCustomerId) {
-      const customer = await stripe.customers.create({
-        metadata: { userId: user_id },
-      });
-      stripeCustomerId = customer.id;
-      await firestore.collection("users").doc(user_id).update({ stripeCustomerId });
-    }
-
-    // Create PaymentIntent for ACH transfer
+    // Create Stripe PaymentIntent (ACH)
     const paymentIntent = await stripe.paymentIntents.create({
-      amount: Math.round(amount * 100), // in cents
+      amount: Math.round(Number(amount) * 100),
       currency: "usd",
       payment_method: stripeBankToken,
+      payment_method_types: ["us_bank_account"],
       customer: stripeCustomerId,
-      off_session: true,
       confirm: true,
-      metadata: { userId: user_id },
+      metadata: {
+        userId: user_id,
+        depositAmount: amount,
+      },
     });
 
-    res.json({ success: true, paymentIntentId: paymentIntent.id });
-  } catch (err) {
-    console.error("Deposit error:", err.response?.data || err.message || err);
-    res.status(500).json({ error: "Deposit failed" });
+    res.json({
+      success: true,
+      paymentIntentId: paymentIntent.id,
+      status: paymentIntent.status,
+    });
+
+  } catch (error) {
+    console.error("Deposit error:", error);
+    res.status(500).json({
+      error: "Deposit failed",
+      details: error.message,
+    });
   }
 });
 
