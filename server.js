@@ -1,41 +1,39 @@
+/* =========================
+   server.js – Ready to Run
+========================= */
+
 const express = require("express");
 const cors = require("cors");
 const { Configuration, PlaidApi, PlaidEnvironments } = require("plaid");
 const admin = require("firebase-admin");
-const path = require("path");
-const app = express();
 const Stripe = require("stripe");
+const bodyParser = require("body-parser");
 
-const stripe = new Stripe(process.env.STRIPE_SECRET); // Your Stripe secret key
-const stripeWebhookSecret = process.env.STRIPE_WEBHOOK_SECRET; // From Stripe webhook setup
+const app = express();
 
+// ====== ENV VARIABLES ======
+const stripe = new Stripe(process.env.STRIPE_SECRET);
+const stripeWebhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+
+// ====== MIDDLEWARE ======
 app.use(cors());
 app.use(express.json());
-app.use(express.static(__dirname)); // Serve static files
+app.use(express.static(__dirname));
 
-/* =========================
-   FIREBASE SETUP
-========================= */
-// Load service account JSON directly (no env variable needed)
-/* =========================
-   FIREBASE SETUP
-========================= */
-
+// ====== FIREBASE SETUP ======
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
 
 admin.initializeApp({
   credential: admin.credential.cert({
     projectId: serviceAccount.project_id,
     clientEmail: serviceAccount.client_email,
-    privateKey: serviceAccount.private_key.replace(/\\n/g, '\n'),
+    privateKey: serviceAccount.private_key.replace(/\\n/g, "\n"),
   }),
 });
 
 const firestore = admin.firestore();
 
-/* =========================
-   PLAID CONFIG
-========================= */
+// ====== PLAID CONFIG ======
 const client = new PlaidApi(
   new Configuration({
     basePath: PlaidEnvironments.sandbox,
@@ -48,16 +46,10 @@ const client = new PlaidApi(
   })
 );
 
-/* =========================
-   HEALTH CHECK
-========================= */
-app.get("/", (req, res) => {
-  res.status(200).send("Plaid backend is running");
-});
+// ====== HEALTH CHECK ======
+app.get("/", (req, res) => res.send("Plaid backend is running"));
 
-/* =========================
-   CREATE LINK TOKEN
-========================= */
+// ====== CREATE LINK TOKEN ======
 app.post("/create_link_token", async (req, res) => {
   try {
     const { user_id } = req.body;
@@ -79,49 +71,50 @@ app.post("/create_link_token", async (req, res) => {
   }
 });
 
-/* =========================
-   EXCHANGE PUBLIC TOKEN
-========================= */
+// ====== EXCHANGE PUBLIC TOKEN + CREATE STRIPE CUSTOMER ======
 app.post("/exchange_public_token", async (req, res) => {
   try {
-    const { public_token, user_id } = req.body;
-    if (!public_token || !user_id)
-      return res.status(400).json({ error: "Missing public_token or user_id" });
+    const { public_token, user_id, email } = req.body;
+    if (!public_token || !user_id || !email)
+      return res.status(400).json({ error: "Missing public_token, user_id, or email" });
 
+    // Exchange Plaid token
     const response = await client.itemPublicTokenExchange({ public_token });
-
     const access_token = response.data.access_token;
     const item_id = response.data.item_id;
 
-    // Call Plaid balance endpoint immediately after exchanging token
-const balanceResponse = await client.accountsBalanceGet({
-  access_token: access_token,
-});
+    // Get balances
+    const balanceResponse = await client.accountsBalanceGet({ access_token });
+    const balances = balanceResponse.data.accounts.map((acct) => ({
+      account_id: acct.account_id,
+      name: acct.name,
+      available: acct.balances.available,
+      current: acct.balances.current,
+      subtype: acct.subtype,
+      type: acct.type,
+    }));
+    const actualBalance = balances.length > 0 ? balances[0].available : 0;
 
-// Build balance object
-const balances = balanceResponse.data.accounts.map(account => ({
-  account_id: account.account_id,
-  name: account.name,
-  available: account.balances.available,
-  current: account.balances.current,
-  subtype: account.subtype,
-  type: account.type
-}));
-// Extract the first account’s available balance
-const actualBalance = balances.length > 0 ? balances[0].available : 0;
-// Save access token + balances in Firestore
-await firestore.collection("users").doc(user_id).set(
-  {
-    bankConnected: true,
-    plaidAccessToken: access_token,
-    plaidItemId: item_id,
-    balances: balances,
-    actualBalance: actualBalance, // <-- now saved
-    savingsBalance: 0, // <-- initialize to 0
-    bankConnectedAt: admin.firestore.FieldValue.serverTimestamp(),
-  },
-  { merge: true }
-);
+    // Create Stripe customer
+    const stripeCustomer = await stripe.customers.create({
+      email,
+      metadata: { userId: user_id },
+    });
+
+    // Save to Firestore
+    await firestore.collection("users").doc(user_id).set(
+      {
+        bankConnected: true,
+        plaidAccessToken: access_token,
+        plaidItemId: item_id,
+        balances,
+        actualBalance,
+        savingsBalance: 0,
+        stripe_customer_id: stripeCustomer.id,
+        bankConnectedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
 
     res.json({ success: true });
   } catch (err) {
@@ -130,46 +123,91 @@ await firestore.collection("users").doc(user_id).set(
   }
 });
 
-/* =========================
-   DEPOSIT ENDPOINT (ACH via Plaid + Stripe)
-========================= */
+// ====== CREATE USER + CONNECT BANK (ALL-IN-ONE) ======
+app.post("/create_user_and_connect_bank", async (req, res) => {
+  try {
+    const { user_id, email, public_token } = req.body;
+    if (!user_id || !email || !public_token) {
+      return res.status(400).json({ error: "Missing user_id, email, or public_token" });
+    }
+
+    // 1️⃣ Create Stripe customer
+    const stripeCustomer = await stripe.customers.create({
+      email,
+      metadata: { userId: user_id },
+    });
+
+    // 2️⃣ Exchange Plaid public token
+    const plaidResponse = await client.itemPublicTokenExchange({ public_token });
+    const access_token = plaidResponse.data.access_token;
+    const item_id = plaidResponse.data.item_id;
+
+    // 3️⃣ Get bank account balances
+    const balanceResponse = await client.accountsBalanceGet({ access_token });
+    const balances = balanceResponse.data.accounts.map((acct) => ({
+      account_id: acct.account_id,
+      name: acct.name,
+      available: acct.balances.available,
+      current: acct.balances.current,
+      subtype: acct.subtype,
+      type: acct.type,
+    }));
+    const actualBalance = balances.length > 0 ? balances[0].available : 0;
+
+    // 4️⃣ Save user in Firestore
+    await firestore.collection("users").doc(user_id).set({
+      bankConnected: true,
+      email,
+      plaidAccessToken: access_token,
+      plaidItemId: item_id,
+      balances,
+      actualBalance,
+      savingsBalance: 0,
+      stripe_customer_id: stripeCustomer.id,
+      bankConnectedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    res.json({
+      success: true,
+      stripeCustomerId: stripeCustomer.id,
+      balances,
+      actualBalance,
+    });
+  } catch (err) {
+    console.error("Create user + bank error:", err.response?.data || err.message);
+    res.status(500).json({ error: err.response?.data || err.message });
+  }
+});
+
+// ====== DEPOSIT (ACH via Plaid + Stripe) ======
 app.post("/deposit", async (req, res) => {
   try {
     const { user_id, amount } = req.body;
+    if (!user_id || !amount) return res.status(400).json({ error: "Missing user_id or amount" });
 
-    if (!user_id || !amount) {
-      return res.status(400).json({ error: "Missing user_id or amount" });
-    }
-
-    // Get user from Firebase
-    const userDoc = await db.collection("users").doc(user_id).get();
-
-    if (!userDoc.exists) {
-      return res.status(404).json({ error: "User not found" });
-    }
+    const userDoc = await firestore.collection("users").doc(user_id).get();
+    if (!userDoc.exists) return res.status(404).json({ error: "User not found" });
 
     const userData = userDoc.data();
-    const accessToken = userData.plaid_access_token;
+    const accessToken = userData.plaidAccessToken;
     const stripeCustomerId = userData.stripe_customer_id;
 
-    if (!accessToken || !stripeCustomerId) {
+    if (!accessToken || !stripeCustomerId)
       return res.status(400).json({ error: "User not fully connected" });
-    }
 
-    // Get accounts from Plaid
-    const accountsResp = await plaidClient.accountsGet({
-      access_token: accessToken,
-    });
+    // Get Plaid accounts
+    const accountsResp = await client.accountsGet({ access_token: accessToken });
+    if (!accountsResp.data.accounts || accountsResp.data.accounts.length === 0)
+      return res.status(400).json({ error: "No bank accounts found" });
 
     const accountId = accountsResp.data.accounts[0].account_id;
 
     // Create Stripe processor token via Plaid
-    const processorTokenResp = await plaidClient.processorTokenCreate({
+    const processorTokenResp = await client.processorTokenCreate({
       access_token: accessToken,
       account_id: accountId,
       processor: "stripe",
     });
-
     const stripeBankToken = processorTokenResp.data.processor_token;
 
     // Create Stripe PaymentIntent (ACH)
@@ -180,39 +218,23 @@ app.post("/deposit", async (req, res) => {
       payment_method_types: ["us_bank_account"],
       customer: stripeCustomerId,
       confirm: true,
-      metadata: {
-        userId: user_id,
-        depositAmount: amount,
-      },
+      metadata: { userId: user_id, depositAmount: amount },
     });
 
-    res.json({
-      success: true,
-      paymentIntentId: paymentIntent.id,
-      status: paymentIntent.status,
-    });
-
+    res.json({ success: true, paymentIntentId: paymentIntent.id, status: paymentIntent.status });
   } catch (error) {
     console.error("Deposit error:", error);
-    res.status(500).json({
-      error: "Deposit failed",
-      details: error.message,
-    });
+    res.status(500).json({ error: "Deposit failed", details: error.message });
   }
 });
 
-/* =========================
-   STRIPE WEBHOOK
-========================= */
-const bodyParser = require("body-parser"); // already imported
-
+// ====== STRIPE WEBHOOK ======
 app.post(
   "/stripe-webhook",
   bodyParser.raw({ type: "application/json" }),
   async (req, res) => {
     const sig = req.headers["stripe-signature"];
     let event;
-
     try {
       event = stripe.webhooks.constructEvent(req.body, sig, stripeWebhookSecret);
     } catch (err) {
@@ -221,16 +243,14 @@ app.post(
     }
 
     try {
-      // When ACH deposit succeeds, update user's savings balance
       if (event.type === "payment_intent.succeeded") {
         const paymentIntent = event.data.object;
         const userId = paymentIntent.metadata.userId;
-        const amount = paymentIntent.amount / 100; // convert cents to USD
+        const amount = paymentIntent.amount / 100;
 
         await firestore.collection("users").doc(userId).update({
           savingsBalance: admin.firestore.FieldValue.increment(amount),
         });
-
         console.log(`User ${userId} savings updated +$${amount}`);
       }
 
@@ -242,14 +262,10 @@ app.post(
   }
 );
 
-app.get("/stripe-webhook", (req, res) => {
-  res.send("Stripe webhook endpoint active");
-});
+app.get("/stripe-webhook", (req, res) => res.send("Stripe webhook endpoint active"));
 
-/* =========================
-   SUCCESS PAGE
-========================= */
-app.get("/plaid-success", (req, res) => {
+// ====== SUCCESS PAGE ======
+app.get("/plaid-success", (req, res) =>
   res.send(`
     <html>
       <body style="text-align:center; font-family:sans-serif;">
@@ -257,52 +273,29 @@ app.get("/plaid-success", (req, res) => {
         <p>You may now return to the app.</p>
       </body>
     </html>
-  `);
-});
-/* =========================
-   GET ACCOUNT BALANCE
-========================= */
+  `)
+);
+
+// ====== GET BALANCE ======
 app.post("/get-balance", async (req, res) => {
   try {
     const { user_id } = req.body;
-    console.log("Received user_id:", user_id);
+    if (!user_id) return res.status(400).json({ error: "Missing user_id" });
 
-    if (!user_id) {
-      return res.status(400).json({ error: "Missing user_id" });
-    }
-
-    // Get user from Firestore
     const userDoc = await firestore.collection("users").doc(user_id).get();
-    console.log("Firestore doc exists:", userDoc.exists);
-
-    if (!userDoc.exists) {
-      return res.status(404).json({ error: "User not found" });
-    }
+    if (!userDoc.exists) return res.status(404).json({ error: "User not found" });
 
     const accessToken = userDoc.data().plaidAccessToken;
-    console.log("Plaid Access Token:", accessToken);
+    if (!accessToken) return res.status(400).json({ error: "No Plaid access token found" });
 
-    if (!accessToken) {
-      return res.status(400).json({ error: "No Plaid access token found" });
-    }
-
-    // Call Plaid balance endpoint
-    const balanceResponse = await client.accountsBalanceGet({
-      access_token: accessToken,
-    });
-
-    console.log("Plaid balance response:", JSON.stringify(balanceResponse.data, null, 2));
-
+    const balanceResponse = await client.accountsBalanceGet({ access_token: accessToken });
     res.json(balanceResponse.data);
-
   } catch (err) {
     console.error("Balance error:", err.response?.data || err.message);
     res.status(500).json({ error: err.response?.data || err.message });
   }
 });
 
-/* =========================
-   START SERVER
-========================= */
+// ====== START SERVER ======
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("Server running on port " + PORT));
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
