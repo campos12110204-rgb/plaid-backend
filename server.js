@@ -1,5 +1,5 @@
 /* =========================
-   server.js – Production Ready
+   server.js – Plaid + Stripe ACH Backend
 ========================= */
 
 const express = require("express");
@@ -13,6 +13,7 @@ const app = express();
 
 app.use(cors());
 app.use(express.json());
+app.use(express.static(__dirname)); // allows index.html
 
 /* =========================
    ENV VARIABLES
@@ -58,11 +59,26 @@ const plaidClient = new PlaidApi(
 ========================= */
 
 app.get("/", (req, res) => {
-  res.send("Backend is running");
+  res.send("Plaid + Stripe backend running");
 });
 
 /* =========================
-   CREATE PLAID LINK TOKEN
+   PLAID SUCCESS PAGE
+========================= */
+
+app.get("/plaid-success", (req, res) =>
+  res.send(`
+    <html>
+      <body style="text-align:center;font-family:sans-serif">
+        <h2>✅ Bank Connected</h2>
+        <p>You may return to the app.</p>
+      </body>
+    </html>
+  `)
+);
+
+/* =========================
+   CREATE LINK TOKEN
 ========================= */
 
 app.post("/create_link_token", async (req, res) => {
@@ -80,13 +96,13 @@ app.post("/create_link_token", async (req, res) => {
 
     res.json({ link_token: response.data.link_token });
   } catch (err) {
-    console.error(err);
+    console.error("Plaid link token error:", err.response?.data || err.message);
     res.status(500).json({ error: "Failed to create link token" });
   }
 });
 
 /* =========================
-   EXCHANGE PLAID TOKEN
+   EXCHANGE PUBLIC TOKEN
 ========================= */
 
 app.post("/exchange_public_token", async (req, res) => {
@@ -112,13 +128,13 @@ app.post("/exchange_public_token", async (req, res) => {
 
     res.json({ success: true });
   } catch (err) {
-    console.error(err);
+    console.error("Exchange error:", err);
     res.status(500).json({ error: "Token exchange failed" });
   }
 });
 
 /* =========================
-   STEP 2 — CREATE STRIPE CUSTOMER
+   CREATE STRIPE CUSTOMER
 ========================= */
 
 app.post("/create-stripe-customer", async (req, res) => {
@@ -126,7 +142,7 @@ app.post("/create-stripe-customer", async (req, res) => {
     const { user_id, email } = req.body;
 
     const customer = await stripe.customers.create({
-      email,
+      email: email,
     });
 
     await firestore.collection("users").doc(user_id).set(
@@ -138,13 +154,13 @@ app.post("/create-stripe-customer", async (req, res) => {
 
     res.json({ customerId: customer.id });
   } catch (err) {
-    console.error(err);
+    console.error("Stripe customer error:", err);
     res.status(500).json({ error: "Customer creation failed" });
   }
 });
 
 /* =========================
-   STEP 3 — DEPOSIT MONEY (PLAID → STRIPE ACH)
+   DEPOSIT (PLAID → STRIPE ACH)
 ========================= */
 
 app.post("/deposit", async (req, res) => {
@@ -157,10 +173,10 @@ app.post("/deposit", async (req, res) => {
       return res.status(404).json({ error: "User not found" });
     }
 
-    const user = userDoc.data();
+    const userData = userDoc.data();
 
-    const accessToken = user.plaidAccessToken;
-    const stripeCustomerId = user.stripe_customer_id;
+    const accessToken = userData.plaidAccessToken;
+    const stripeCustomerId = userData.stripe_customer_id;
 
     if (!accessToken || !stripeCustomerId) {
       return res.status(400).json({ error: "User not connected properly" });
@@ -192,7 +208,7 @@ app.post("/deposit", async (req, res) => {
     });
 
     const paymentIntent = await stripe.paymentIntents.create({
-      amount: Math.round(amount * 100),
+      amount: Math.round(Number(amount) * 100),
       currency: "usd",
       customer: stripeCustomerId,
       payment_method: paymentMethod.id,
@@ -200,6 +216,7 @@ app.post("/deposit", async (req, res) => {
       confirm: true,
       metadata: {
         userId: user_id,
+        depositAmount: amount,
       },
     });
 
@@ -208,9 +225,12 @@ app.post("/deposit", async (req, res) => {
       status: paymentIntent.status,
       paymentIntentId: paymentIntent.id,
     });
-  } catch (err) {
-    console.error("Deposit error:", err);
-    res.status(500).json({ error: "Deposit failed", details: err.message });
+  } catch (error) {
+    console.error("Deposit error:", error);
+    res.status(500).json({
+      error: "Deposit failed",
+      details: error.message,
+    });
   }
 });
 
@@ -233,8 +253,8 @@ app.post(
         stripeWebhookSecret
       );
     } catch (err) {
-      console.error(err);
-      return res.status(400).send(`Webhook error`);
+      console.error("Webhook signature failed:", err.message);
+      return res.status(400).send("Webhook error");
     }
 
     const paymentIntent = event.data.object;
@@ -251,15 +271,15 @@ app.post(
         savingsBalance: admin.firestore.FieldValue.increment(amount),
       });
 
-      console.log("Deposit completed for user:", userId);
+      console.log("Savings updated:", userId, amount);
     }
 
-    res.json({ received: true });
+    res.status(200).json({ received: true });
   }
 );
 
 /* =========================
-   GET USER BALANCE
+   GET BALANCE
 ========================= */
 
 app.post("/get-balance", async (req, res) => {
