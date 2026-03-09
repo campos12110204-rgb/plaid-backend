@@ -229,7 +229,7 @@ app.post("/deposit", async (req, res) => {
   try {
     const { user_id, email, amount } = req.body;
 
-    if (!user_id || !amount || !email) {
+    if (!user_id || !email || !amount) {
       return res.status(400).json({ error: "Missing user_id, email, or amount" });
     }
 
@@ -238,11 +238,11 @@ app.post("/deposit", async (req, res) => {
       return res.status(400).json({ error: "Invalid amount" });
     }
 
-    // 1️⃣ Fetch user from Firebase
+    // 1️⃣ Fetch user
     const userDoc = await firestore.collection("users").doc(user_id).get();
-    let userData = userDoc.exists ? userDoc.data() : {};
+    const userData = userDoc.exists ? userDoc.data() : {};
 
-    // 2️⃣ Ensure Stripe customer exists
+    // 2️⃣ Auto-create Stripe customer if missing
     let stripeCustomerId = userData.stripe_customer_id;
     if (!stripeCustomerId) {
       const customer = await stripe.customers.create({ email });
@@ -253,7 +253,7 @@ app.post("/deposit", async (req, res) => {
         { merge: true }
       );
 
-      console.log("Created Stripe customer:", stripeCustomerId);
+      console.log("Stripe customer created:", stripeCustomerId);
     }
 
     // 3️⃣ Ensure Plaid is connected
@@ -262,13 +262,13 @@ app.post("/deposit", async (req, res) => {
       return res.status(400).json({ error: "User has not connected a bank" });
     }
 
-    // 4️⃣ Get user bank account
+    // 4️⃣ Get checking account
     const accounts = await plaidClient.accountsGet({ access_token: accessToken });
     const account =
-      accounts.data.accounts.find((a) => a.subtype === "checking") || accounts.data.accounts[0];
+      accounts.data.accounts.find(a => a.subtype === "checking") || accounts.data.accounts[0];
     const accountId = account.account_id;
 
-    // 5️⃣ Create Stripe processor token from Plaid
+    // 5️⃣ Create processor token
     const processorTokenResponse = await plaidClient.processorTokenCreate({
       access_token: accessToken,
       account_id: accountId,
@@ -282,9 +282,7 @@ app.post("/deposit", async (req, res) => {
       currency: "usd",
       customer: stripeCustomerId,
       payment_method_types: ["us_bank_account"],
-      payment_method_data: {
-        us_bank_account: { processor_token: processorToken },
-      },
+      payment_method_data: { us_bank_account: { processor_token: processorToken } },
       confirm: true,
       metadata: { userId: user_id, depositAmount },
     });
@@ -299,10 +297,7 @@ app.post("/deposit", async (req, res) => {
 
   } catch (error) {
     console.error("Deposit error:", error);
-    res.status(500).json({
-      error: "Deposit failed",
-      details: error.message,
-    });
+    res.status(500).json({ error: "Deposit failed", details: error.message });
   }
 });
 
