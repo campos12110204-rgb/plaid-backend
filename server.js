@@ -98,7 +98,7 @@ app.post("/create_link_token", async (req, res) => {
       country_codes: ["US"],
       language: "en",
       redirect_uri:
-        "https://YOUR-RENDER-APP-NAME.onrender.com/plaid-success",
+        "https://plaid-backend-1.onrender.com/plaid-success",
     });
 
     res.json({
