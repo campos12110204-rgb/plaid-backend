@@ -227,69 +227,76 @@ app.post("/create-stripe-customer", async (req, res) => {
 
 app.post("/deposit", async (req, res) => {
   try {
-    const { user_id, amount } = req.body;
+    const { user_id, email, amount } = req.body;
+
+    if (!user_id || !amount || !email) {
+      return res.status(400).json({ error: "Missing user_id, email, or amount" });
+    }
 
     const depositAmount = parseFloat(amount);
-
-    if (isNaN(depositAmount)) {
+    if (isNaN(depositAmount) || depositAmount <= 0) {
       return res.status(400).json({ error: "Invalid amount" });
     }
 
+    // 1️⃣ Fetch user from Firebase
     const userDoc = await firestore.collection("users").doc(user_id).get();
+    let userData = userDoc.exists ? userDoc.data() : {};
 
-    if (!userDoc.exists) {
-      return res.status(404).json({ error: "User not found" });
+    // 2️⃣ Ensure Stripe customer exists
+    let stripeCustomerId = userData.stripe_customer_id;
+    if (!stripeCustomerId) {
+      const customer = await stripe.customers.create({ email });
+      stripeCustomerId = customer.id;
+
+      await firestore.collection("users").doc(user_id).set(
+        { stripe_customer_id: stripeCustomerId },
+        { merge: true }
+      );
+
+      console.log("Created Stripe customer:", stripeCustomerId);
     }
 
-    const userData = userDoc.data();
-
+    // 3️⃣ Ensure Plaid is connected
     const accessToken = userData.plaidAccessToken;
-    const stripeCustomerId = userData.stripe_customer_id;
-
-    if (!accessToken || !stripeCustomerId) {
-      return res.status(400).json({ error: "User not connected properly" });
+    if (!accessToken) {
+      return res.status(400).json({ error: "User has not connected a bank" });
     }
 
-    const accounts = await plaidClient.accountsGet({
-      access_token: accessToken,
-    });
-
+    // 4️⃣ Get user bank account
+    const accounts = await plaidClient.accountsGet({ access_token: accessToken });
     const account =
-      accounts.data.accounts.find((a) => a.subtype === "checking") ||
-      accounts.data.accounts[0];
-
+      accounts.data.accounts.find((a) => a.subtype === "checking") || accounts.data.accounts[0];
     const accountId = account.account_id;
 
+    // 5️⃣ Create Stripe processor token from Plaid
     const processorTokenResponse = await plaidClient.processorTokenCreate({
       access_token: accessToken,
       account_id: accountId,
       processor: "stripe",
     });
-
     const processorToken = processorTokenResponse.data.processor_token;
 
+    // 6️⃣ Create Stripe PaymentIntent
     const paymentIntent = await stripe.paymentIntents.create({
       amount: Math.round(depositAmount * 100),
       currency: "usd",
       customer: stripeCustomerId,
       payment_method_types: ["us_bank_account"],
       payment_method_data: {
-        us_bank_account: {
-          processor_token: processorToken,
-        },
+        us_bank_account: { processor_token: processorToken },
       },
       confirm: true,
-      metadata: {
-        userId: user_id,
-        depositAmount: depositAmount,
-      },
+      metadata: { userId: user_id, depositAmount },
     });
+
+    console.log("PaymentIntent created:", paymentIntent.id, paymentIntent.status);
 
     res.json({
       success: true,
-      status: paymentIntent.status,
       paymentIntentId: paymentIntent.id,
+      status: paymentIntent.status,
     });
+
   } catch (error) {
     console.error("Deposit error:", error);
     res.status(500).json({
