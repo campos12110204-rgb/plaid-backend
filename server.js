@@ -192,7 +192,13 @@ app.post("/exchange_public_token", async (req, res) => {
 
 app.post("/create-stripe-customer", async (req, res) => {
   try {
-    const { user_id, email } = req.body;
+
+    const user_id = req.body.user_id || req.body.userId;
+    const email = req.body.email;
+
+    if (!user_id || !email) {
+      return res.status(400).json({ error: "Missing user_id or email" });
+    }
 
     const customer = await stripe.customers.create({
       email: email,
@@ -205,7 +211,10 @@ app.post("/create-stripe-customer", async (req, res) => {
       { merge: true }
     );
 
+    console.log("Stripe customer saved:", user_id, customer.id);
+
     res.json({ customerId: customer.id });
+
   } catch (err) {
     console.error("Stripe customer error:", err);
     res.status(500).json({ error: "Customer creation failed" });
