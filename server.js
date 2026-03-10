@@ -187,15 +187,18 @@ app.post("/create-stripe-customer", async (req, res) => {
 });
 
 /* =========================
-   DEPOSIT (Plaid → Stripe ACH)
+   DEPOSIT (Plaid → Stripe ACH) - Safe for doubles
 ========================= */
 app.post("/deposit", async (req, res) => {
   try {
     const { user_id, amount } = req.body;
-    if (!user_id || amount === undefined) return res.status(400).json({ error: "Missing parameters" });
+    if (!user_id || amount === undefined)
+      return res.status(400).json({ error: "Missing parameters" });
 
-    const depositAmount = Number(amount);
-    if (isNaN(depositAmount) || depositAmount <= 0) return res.status(400).json({ error: "Invalid amount" });
+    // Convert to float to safely handle slider decimals
+    const depositAmount = parseFloat(amount);
+    if (isNaN(depositAmount) || depositAmount <= 0)
+      return res.status(400).json({ error: "Invalid amount" });
 
     const userRef = firestore.collection("users").doc(user_id);
     const userDoc = await userRef.get();
@@ -203,7 +206,8 @@ app.post("/deposit", async (req, res) => {
 
     const userData = userDoc.data();
     const { plaidAccessToken, plaidAccountId, email } = userData;
-    if (!plaidAccessToken || !plaidAccountId) return res.status(400).json({ error: "Missing Plaid bank info" });
+    if (!plaidAccessToken || !plaidAccountId)
+      return res.status(400).json({ error: "Missing Plaid bank info" });
 
     // Ensure Stripe customer exists
     let stripeCustomerId = userData.stripe_customer_id;
@@ -225,11 +229,12 @@ app.post("/deposit", async (req, res) => {
     const paymentMethod = await stripe.paymentMethods.create({
       type: "us_bank_account",
       us_bank_account: { token: stripeBankToken },
-      billing_details: { name: userData.name || "FlutterFlow User", email: email },
+      billing_details: { name: userData.name || "FlutterFlow User", email },
     });
 
-    // Create PaymentIntent (ACH)
+    // Stripe expects integer cents, so convert safely
     const depositCents = Math.round(depositAmount * 100);
+
     const paymentIntent = await stripe.paymentIntents.create({
       amount: depositCents,
       currency: "usd",
@@ -250,7 +255,6 @@ app.post("/deposit", async (req, res) => {
     res.status(500).json({ success: false, error: err.message || "Deposit failed" });
   }
 });
-
 /* =========================
    GET BALANCE
 ========================= */
