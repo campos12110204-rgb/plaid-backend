@@ -199,12 +199,13 @@ app.post("/create-stripe-customer", async (req, res) => {
 });
 
 /* =========================
-   DEPOSIT (PLAID → STRIPE ACH)
+   DEPOSIT (PLAID → STRIPE ACH) WITH AUTO-CUSTOMER
 ========================= */
 app.post("/deposit", async (req, res) => {
   try {
     const { user_id, amount } = req.body;
-    if (!user_id || !amount) return res.status(400).json({ error: "Missing parameters" });
+    if (!user_id || !amount)
+      return res.status(400).json({ error: "Missing parameters" });
 
     const depositAmount = parseFloat(amount);
     if (isNaN(depositAmount) || depositAmount <= 0)
@@ -212,17 +213,26 @@ app.post("/deposit", async (req, res) => {
 
     const userRef = firestore.collection("users").doc(user_id);
     const userDoc = await userRef.get();
-    if (!userDoc.exists) return res.status(404).json({ error: "User not found" });
+    if (!userDoc.exists)
+      return res.status(404).json({ error: "User not found" });
 
     const userData = userDoc.data();
-    const stripeCustomerId = userData.stripe_customer_id;
-    const plaidAccessToken = userData.plaidAccessToken;
-    const plaidAccountId = userData.plaidAccountId;
 
-    if (!stripeCustomerId || !plaidAccessToken || !plaidAccountId)
-      return res.status(400).json({ error: "Missing Stripe customer or Plaid bank info" });
+    // Check Plaid bank info
+    const { plaidAccessToken, plaidAccountId, email } = userData;
+    if (!plaidAccessToken || !plaidAccountId)
+      return res.status(400).json({ error: "Missing Plaid bank info" });
 
-    // Plaid → Stripe processor token
+    // 1️⃣ Ensure Stripe customer exists
+    let stripeCustomerId = userData.stripe_customer_id;
+    if (!stripeCustomerId) {
+      const customer = await stripe.customers.create({ email });
+      stripeCustomerId = customer.id;
+      await userRef.set({ stripe_customer_id: stripeCustomerId }, { merge: true });
+      console.log("Created Stripe customer:", stripeCustomerId);
+    }
+
+    // 2️⃣ Plaid → Stripe processor token
     const processorResp = await plaidClient.processorTokenCreate({
       access_token: plaidAccessToken,
       account_id: plaidAccountId,
@@ -230,17 +240,17 @@ app.post("/deposit", async (req, res) => {
     });
     const stripeBankToken = processorResp.data.processor_token;
 
-    // Create PaymentMethod
+    // 3️⃣ Create PaymentMethod
     const paymentMethod = await stripe.paymentMethods.create({
       type: "us_bank_account",
       us_bank_account: { token: stripeBankToken },
       billing_details: {
         name: userData.name || "FlutterFlow User",
-        email: userData.email,
+        email: email,
       },
     });
 
-    // Create PaymentIntent
+    // 4️⃣ Create PaymentIntent (ACH)
     const paymentIntent = await stripe.paymentIntents.create({
       amount: Math.round(depositAmount * 100),
       currency: "usd",
@@ -251,7 +261,7 @@ app.post("/deposit", async (req, res) => {
       metadata: { userId: user_id },
     });
 
-    // Return processing info to FlutterFlow
+    // 5️⃣ Return status to FlutterFlow
     res.json({
       success: true,
       status: paymentIntent.status, // 'processing' means pending ACH
