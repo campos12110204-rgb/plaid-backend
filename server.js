@@ -199,15 +199,18 @@ app.post("/create-stripe-customer", async (req, res) => {
 });
 
 /* =========================
-   DEPOSIT (PLAID → STRIPE ACH) WITH AUTO-CUSTOMER
+   DEPOSIT (PLAID → STRIPE ACH) - Double-safe + Auto Customer
 ========================= */
+
 app.post("/deposit", async (req, res) => {
   try {
     const { user_id, amount } = req.body;
-    if (!user_id || !amount)
+
+    // Validate input
+    if (!user_id || amount === undefined)
       return res.status(400).json({ error: "Missing parameters" });
 
-    const depositAmount = parseFloat(amount);
+    const depositAmount = Number(amount);
     if (isNaN(depositAmount) || depositAmount <= 0)
       return res.status(400).json({ error: "Invalid amount" });
 
@@ -251,8 +254,9 @@ app.post("/deposit", async (req, res) => {
     });
 
     // 4️⃣ Create PaymentIntent (ACH)
+    const depositCents = Math.round(depositAmount * 100); // convert double to cents
     const paymentIntent = await stripe.paymentIntents.create({
-      amount: Math.round(depositAmount * 100),
+      amount: depositCents,
       currency: "usd",
       customer: stripeCustomerId,
       payment_method: paymentMethod.id,
@@ -264,11 +268,12 @@ app.post("/deposit", async (req, res) => {
     // 5️⃣ Return status to FlutterFlow
     res.json({
       success: true,
-      status: paymentIntent.status, // 'processing' means pending ACH
+      status: paymentIntent.status, // 'processing' = pending ACH
       paymentIntentId: paymentIntent.id,
     });
+
   } catch (err) {
-    console.error("Deposit error:", err);
+    console.error("Deposit error:", err.response?.data || err.message);
     res.status(500).json({ success: false, error: err.message || "Deposit failed" });
   }
 });
