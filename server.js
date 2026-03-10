@@ -1,5 +1,5 @@
 /* =========================
-   Fully functional Plaid + Stripe ACH Backend
+   Fully automated Plaid + Stripe ACH Backend
 ========================= */
 
 const express = require("express");
@@ -69,25 +69,21 @@ app.post(
 
     switch (event.type) {
       case "payment_intent.processing":
-        console.log("ACH processing (pending):", paymentIntent.id);
         await firestore.collection("users").doc(userId).set(
           { pendingDeposit: paymentIntent.amount / 100 },
           { merge: true }
         );
         break;
       case "payment_intent.succeeded":
-        const amount = paymentIntent.amount / 100;
         await firestore.collection("users").doc(userId).set(
           {
-            savingsBalance: admin.firestore.FieldValue.increment(amount),
+            savingsBalance: admin.firestore.FieldValue.increment(paymentIntent.amount / 100),
             pendingDeposit: 0,
           },
           { merge: true }
         );
-        console.log("Balance updated:", userId, amount);
         break;
       case "payment_intent.payment_failed":
-        console.log("Payment failed:", paymentIntent.id);
         await firestore.collection("users").doc(userId).set(
           { pendingDeposit: 0 },
           { merge: true }
@@ -126,29 +122,43 @@ app.post("/create_link_token", async (req, res) => {
 });
 
 /* =========================
-   EXCHANGE PUBLIC TOKEN (store selected account)
+   EXCHANGE PUBLIC TOKEN (auto account selection)
 ========================= */
 app.post("/exchange_public_token", async (req, res) => {
   try {
-    const { public_token, user_id, account_id } = req.body;
-    if (!public_token || !user_id || !account_id)
+    const { public_token, user_id } = req.body;
+    if (!public_token || !user_id)
       return res.status(400).json({ error: "Missing parameters" });
 
+    // Exchange token
     const response = await plaidClient.itemPublicTokenExchange({ public_token });
     const access_token = response.data.access_token;
     const item_id = response.data.item_id;
 
+    // Get accounts and pick first checking or savings
+    const accountsResp = await plaidClient.accountsGet({ access_token });
+    const accounts = accountsResp.data.accounts;
+    const primaryAccount = accounts.find(
+      (acc) => acc.subtype === "checking" || acc.subtype === "savings"
+    );
+
+    if (!primaryAccount)
+      return res.status(400).json({ error: "No checking/savings account found" });
+
+    const plaidAccountId = primaryAccount.account_id;
+
+    // Store in Firestore
     await firestore.collection("users").doc(user_id).set(
       {
         plaidAccessToken: access_token,
         plaidItemId: item_id,
-        plaidAccountId: account_id, // use selected account
+        plaidAccountId,
         bankConnected: true,
       },
       { merge: true }
     );
 
-    res.json({ success: true, plaidAccountId: account_id });
+    res.json({ success: true, plaidAccountId });
   } catch (err) {
     console.error("Exchange error:", err);
     res.status(500).json({ error: "Token exchange failed" });
@@ -177,7 +187,7 @@ app.post("/create-stripe-customer", async (req, res) => {
 });
 
 /* =========================
-   DEPOSIT (PLAID → STRIPE ACH) - safe + pending
+   DEPOSIT (Plaid → Stripe ACH)
 ========================= */
 app.post("/deposit", async (req, res) => {
   try {
@@ -201,27 +211,21 @@ app.post("/deposit", async (req, res) => {
       const customer = await stripe.customers.create({ email });
       stripeCustomerId = customer.id;
       await userRef.set({ stripe_customer_id: stripeCustomerId }, { merge: true });
-      console.log("Created Stripe customer:", stripeCustomerId);
     }
 
-    // Create Stripe processor token
-    console.log("Creating processor token...", { plaidAccountId, plaidAccessToken });
+    // Plaid → Stripe processor token
     const processorResp = await plaidClient.processorTokenCreate({
       access_token: plaidAccessToken,
       account_id: plaidAccountId,
       processor: "stripe",
     });
     const stripeBankToken = processorResp.data.processor_token;
-    if (!stripeBankToken) return res.status(400).json({ error: "Invalid processor token" });
 
     // Create PaymentMethod
     const paymentMethod = await stripe.paymentMethods.create({
       type: "us_bank_account",
       us_bank_account: { token: stripeBankToken },
-      billing_details: {
-        name: userData.name || "FlutterFlow User",
-        email: email,
-      },
+      billing_details: { name: userData.name || "FlutterFlow User", email: email },
     });
 
     // Create PaymentIntent (ACH)
@@ -238,7 +242,7 @@ app.post("/deposit", async (req, res) => {
 
     res.json({
       success: true,
-      status: paymentIntent.status, // processing = pending ACH
+      status: paymentIntent.status,
       paymentIntentId: paymentIntent.id,
     });
   } catch (err) {
