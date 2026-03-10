@@ -1,5 +1,6 @@
 /* =========================
    Plaid + Stripe ACH Backend
+   Live ACH with pending balance
 ========================= */
 
 const express = require("express");
@@ -10,21 +11,19 @@ const admin = require("firebase-admin");
 const { Configuration, PlaidApi, PlaidEnvironments } = require("plaid");
 
 const app = express();
-
 app.use(cors());
 app.use(express.static(__dirname));
+app.use(express.json());
 
 /* =========================
    STRIPE
 ========================= */
-
 const stripe = new Stripe(process.env.STRIPE_SECRET);
 const stripeWebhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
 /* =========================
    FIREBASE
 ========================= */
-
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
 
 admin.initializeApp({
@@ -40,7 +39,6 @@ const firestore = admin.firestore();
 /* =========================
    PLAID CONFIG
 ========================= */
-
 const plaidClient = new PlaidApi(
   new Configuration({
     basePath: PlaidEnvironments.sandbox,
@@ -56,45 +54,53 @@ const plaidClient = new PlaidApi(
 /* =========================
    STRIPE WEBHOOK
 ========================= */
-
 app.post(
   "/stripe-webhook",
   bodyParser.raw({ type: "application/json" }),
   async (req, res) => {
     let event;
-
     try {
       const sig = req.headers["stripe-signature"];
-
-      event = stripe.webhooks.constructEvent(
-        req.body,
-        sig,
-        stripeWebhookSecret
-      );
+      event = stripe.webhooks.constructEvent(req.body, sig, stripeWebhookSecret);
     } catch (err) {
       console.error("Webhook signature failed:", err.message);
       return res.status(400).send("Webhook error");
     }
 
     const paymentIntent = event.data.object;
+    const userId = paymentIntent.metadata.userId;
 
-    if (event.type === "payment_intent.processing") {
-      console.log("ACH processing:", paymentIntent.id);
-    }
+    switch (event.type) {
+      case "payment_intent.processing":
+        console.log("ACH processing (pending):", paymentIntent.id);
+        // Optional: mark pending in Firestore
+        await firestore.collection("users").doc(userId).set(
+          {
+            pendingDeposit: paymentIntent.amount / 100,
+          },
+          { merge: true }
+        );
+        break;
 
-    if (event.type === "payment_intent.succeeded") {
-      const userId = paymentIntent.metadata.userId;
-      const amount = paymentIntent.amount / 100;
+      case "payment_intent.succeeded":
+        const amount = paymentIntent.amount / 100;
+        await firestore.collection("users").doc(userId).set(
+          {
+            savingsBalance: admin.firestore.FieldValue.increment(amount),
+            pendingDeposit: 0,
+          },
+          { merge: true }
+        );
+        console.log("Balance updated:", userId, amount);
+        break;
 
-      await firestore.collection("users").doc(userId).update({
-        savingsBalance: admin.firestore.FieldValue.increment(amount),
-      });
-
-      console.log("Balance updated:", userId, amount);
-    }
-
-    if (event.type === "payment_intent.payment_failed") {
-      console.log("Payment failed:", paymentIntent.id);
+      case "payment_intent.payment_failed":
+        console.log("Payment failed:", paymentIntent.id);
+        await firestore.collection("users").doc(userId).set(
+          { pendingDeposit: 0 },
+          { merge: true }
+        );
+        break;
     }
 
     res.json({ received: true });
@@ -102,52 +108,26 @@ app.post(
 );
 
 /* =========================
-   JSON BODY PARSER
-========================= */
-
-app.use(express.json());
-
-/* =========================
    HEALTH CHECK
 ========================= */
-
 app.get("/", (req, res) => {
   res.send("Plaid + Stripe backend running");
 });
 
 /* =========================
-   PLAID SUCCESS PAGE
-========================= */
-
-app.get("/plaid-success", (req, res) =>
-  res.send(`
-    <html>
-      <body style="text-align:center;font-family:sans-serif">
-        <h2>✅ Bank Connected</h2>
-        <p>You may return to the app.</p>
-      </body>
-    </html>
-  `)
-);
-
-/* =========================
    CREATE LINK TOKEN
 ========================= */
-
 app.post("/create_link_token", async (req, res) => {
   try {
     const { user_id } = req.body;
-
     const response = await plaidClient.linkTokenCreate({
       user: { client_user_id: user_id },
       client_name: "FlutterFlow App",
       products: ["auth"],
       country_codes: ["US"],
       language: "en",
-      redirect_uri:
-        "https://plaid-backend-1.onrender.com/plaid-success",
+      redirect_uri: "https://plaid-backend-1.onrender.com/plaid-success",
     });
-
     res.json({ link_token: response.data.link_token });
   } catch (err) {
     console.error("Plaid link token error:", err);
@@ -157,29 +137,40 @@ app.post("/create_link_token", async (req, res) => {
 
 /* =========================
    EXCHANGE PUBLIC TOKEN
+   (store plaidAccountId)
 ========================= */
-
 app.post("/exchange_public_token", async (req, res) => {
   try {
     const { public_token, user_id } = req.body;
+    if (!public_token || !user_id)
+      return res.status(400).json({ error: "Missing public_token or user_id" });
 
-    const response = await plaidClient.itemPublicTokenExchange({
-      public_token,
-    });
-
+    const response = await plaidClient.itemPublicTokenExchange({ public_token });
     const access_token = response.data.access_token;
     const item_id = response.data.item_id;
+
+    const accountsResp = await plaidClient.accountsGet({ access_token });
+    const accounts = accountsResp.data.accounts;
+    const primaryAccount = accounts.find(
+      (acc) => acc.subtype === "checking" || acc.subtype === "savings"
+    );
+
+    if (!primaryAccount)
+      return res.status(400).json({ error: "No checking/savings account found" });
+
+    const plaidAccountId = primaryAccount.account_id;
 
     await firestore.collection("users").doc(user_id).set(
       {
         plaidAccessToken: access_token,
         plaidItemId: item_id,
+        plaidAccountId,
         bankConnected: true,
       },
       { merge: true }
     );
 
-    res.json({ success: true });
+    res.json({ success: true, plaidAccountId });
   } catch (err) {
     console.error("Exchange error:", err);
     res.status(500).json({ error: "Token exchange failed" });
@@ -189,32 +180,18 @@ app.post("/exchange_public_token", async (req, res) => {
 /* =========================
    CREATE STRIPE CUSTOMER
 ========================= */
-
 app.post("/create-stripe-customer", async (req, res) => {
   try {
+    const { user_id, email } = req.body;
+    if (!user_id || !email) return res.status(400).json({ error: "Missing user_id or email" });
 
-    const user_id = req.body.user_id || req.body.userId;
-    const email = req.body.email;
-
-    if (!user_id || !email) {
-      return res.status(400).json({ error: "Missing user_id or email" });
-    }
-
-    const customer = await stripe.customers.create({
-      email: email,
-    });
-
+    const customer = await stripe.customers.create({ email });
     await firestore.collection("users").doc(user_id).set(
-      {
-        stripe_customer_id: customer.id,
-      },
+      { stripe_customer_id: customer.id },
       { merge: true }
     );
 
-    console.log("Stripe customer saved:", user_id, customer.id);
-
     res.json({ customerId: customer.id });
-
   } catch (err) {
     console.error("Stripe customer error:", err);
     res.status(500).json({ error: "Customer creation failed" });
@@ -222,96 +199,83 @@ app.post("/create-stripe-customer", async (req, res) => {
 });
 
 /* =========================
-   DEPOSIT (PLAID → STRIPE)
+   DEPOSIT (PLAID → STRIPE ACH)
 ========================= */
-
 app.post("/deposit", async (req, res) => {
   try {
-
-    const { user_id, email, amount } = req.body;
-
-    if (!user_id || !email || !amount) {
-      return res.status(400).json({
-        success: false,
-        error: "Missing parameters",
-      });
-    }
+    const { user_id, amount } = req.body;
+    if (!user_id || !amount) return res.status(400).json({ error: "Missing parameters" });
 
     const depositAmount = parseFloat(amount);
-
-    if (isNaN(depositAmount) || depositAmount <= 0) {
-      return res.status(400).json({
-        success: false,
-        error: "Invalid amount",
-      });
-    }
+    if (isNaN(depositAmount) || depositAmount <= 0)
+      return res.status(400).json({ error: "Invalid amount" });
 
     const userRef = firestore.collection("users").doc(user_id);
     const userDoc = await userRef.get();
-    const userData = userDoc.exists ? userDoc.data() : {};
+    if (!userDoc.exists) return res.status(404).json({ error: "User not found" });
 
-    let stripeCustomerId = userData.stripe_customer_id;
+    const userData = userDoc.data();
+    const stripeCustomerId = userData.stripe_customer_id;
+    const plaidAccessToken = userData.plaidAccessToken;
+    const plaidAccountId = userData.plaidAccountId;
 
-    if (!stripeCustomerId) {
+    if (!stripeCustomerId || !plaidAccessToken || !plaidAccountId)
+      return res.status(400).json({ error: "Missing Stripe customer or Plaid bank info" });
 
-      const customer = await stripe.customers.create({
-        email: email,
-      });
+    // Plaid → Stripe processor token
+    const processorResp = await plaidClient.processorTokenCreate({
+      access_token: plaidAccessToken,
+      account_id: plaidAccountId,
+      processor: "stripe",
+    });
+    const stripeBankToken = processorResp.data.processor_token;
 
-      stripeCustomerId = customer.id;
-
-      await userRef.set(
-        {
-          stripe_customer_id: stripeCustomerId,
-        },
-        { merge: true }
-      );
-
-      console.log("Stripe customer created:", stripeCustomerId);
-    }
-
-    await userRef.set(
-      {
-        savingsBalance: admin.firestore.FieldValue.increment(depositAmount),
+    // Create PaymentMethod
+    const paymentMethod = await stripe.paymentMethods.create({
+      type: "us_bank_account",
+      us_bank_account: { token: stripeBankToken },
+      billing_details: {
+        name: userData.name || "FlutterFlow User",
+        email: userData.email,
       },
-      { merge: true }
-    );
+    });
 
-    console.log("Deposit simulated:", user_id, depositAmount);
+    // Create PaymentIntent
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: Math.round(depositAmount * 100),
+      currency: "usd",
+      customer: stripeCustomerId,
+      payment_method: paymentMethod.id,
+      off_session: true,
+      confirm: true,
+      metadata: { userId: user_id },
+    });
 
+    // Return processing info to FlutterFlow
     res.json({
       success: true,
-      status: "succeeded",
-      paymentIntentId: "sandbox_mock",
+      status: paymentIntent.status, // 'processing' means pending ACH
+      paymentIntentId: paymentIntent.id,
     });
-
-  } catch (error) {
-
-    console.error("Deposit error:", error);
-
-    res.status(500).json({
-      success: false,
-      error: "Deposit failed",
-    });
+  } catch (err) {
+    console.error("Deposit error:", err);
+    res.status(500).json({ success: false, error: err.message || "Deposit failed" });
   }
 });
 
 /* =========================
    GET BALANCE
 ========================= */
-
 app.post("/get-balance", async (req, res) => {
   try {
     const { user_id } = req.body;
-
     const doc = await firestore.collection("users").doc(user_id).get();
+    if (!doc.exists) return res.status(404).json({ error: "User not found" });
 
-    if (!doc.exists) {
-      return res.status(404).json({ error: "User not found" });
-    }
-
+    const data = doc.data();
     res.json({
-      savingsBalance: doc.data().savingsBalance || 0,
+      savingsBalance: data.savingsBalance || 0,
+      pendingDeposit: data.pendingDeposit || 0, // ACH pending amount
     });
   } catch (err) {
     res.status(500).json({ error: "Failed to get balance" });
@@ -321,9 +285,5 @@ app.post("/get-balance", async (req, res) => {
 /* =========================
    START SERVER
 ========================= */
-
 const PORT = process.env.PORT || 10000;
-
-app.listen(PORT, () => {
-  console.log("Server running on port", PORT);
-});
+app.listen(PORT, () => console.log("Server running on port", PORT));
