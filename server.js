@@ -11,7 +11,7 @@ app.use(cors());
 app.use(express.json());
 
 // Stripe webhook requires raw body
-app.use("/webhook", bodyParser.raw({ type: "application/json") }));
+app.use("/webhook", bodyParser.raw({ type: "application/json" }));
 
 /* =========================
    STRIPE
