@@ -1,6 +1,6 @@
 const express = require("express");
 const cors = require("cors");
-const Stripe = require("stripe");
+const - = require("stripe");
 const admin = require("firebase-admin");
 const { Configuration, PlaidApi, PlaidEnvironments } = require("plaid");
 const bodyParser = require("body-parser");
@@ -252,10 +252,8 @@ app.post("/webhook", async (req, res) => {
    SERVE FRONTEND
 ========================= */
 
-app.use(express.static(path.join(__dirname, "public")));
-
-app.use((req, res) => {
-  res.sendFile(path.join(__dirname, "public", "index.html"));
+app.get("/", (req, res) => {
+  res.send("Plaid backend running");
 });
 
 /* =========================
