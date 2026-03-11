@@ -1,22 +1,18 @@
 const express = require("express");
 const cors = require("cors");
-const bodyParser = require("body-parser");
 const Stripe = require("stripe");
 const admin = require("firebase-admin");
 const { Configuration, PlaidApi, PlaidEnvironments } = require("plaid");
 
 const app = express();
-
 app.use(cors());
 app.use(express.json());
-app.use(express.static(__dirname));
 
 /* =========================
    STRIPE
 ========================= */
 
 const stripe = new Stripe(process.env.STRIPE_SECRET);
-const stripeWebhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
 /* =========================
    FIREBASE
@@ -51,7 +47,7 @@ const plaidClient = new PlaidApi(
 );
 
 /* =========================
-   HEALTH CHECK
+   HEALTH
 ========================= */
 
 app.get("/", (req, res) => {
@@ -61,6 +57,7 @@ app.get("/", (req, res) => {
 /* =========================
    CREATE LINK TOKEN
 ========================= */
+
 app.post("/create_link_token", async (req, res) => {
 
   try {
@@ -70,10 +67,10 @@ app.post("/create_link_token", async (req, res) => {
     const response = await plaidClient.linkTokenCreate({
 
       user: {
-        client_user_id: user_id
+        client_user_id: user_id,
       },
 
-      client_name: "My App",
+      client_name: "Savings App",
 
       products: ["auth"],
 
@@ -100,7 +97,7 @@ app.post("/create_link_token", async (req, res) => {
 });
 
 /* =========================
-   EXCHANGE PUBLIC TOKEN
+   EXCHANGE TOKEN
 ========================= */
 
 app.post("/exchange_public_token", async (req, res) => {
@@ -120,35 +117,25 @@ app.post("/exchange_public_token", async (req, res) => {
       access_token
     });
 
-    const account = accounts.data.accounts.find(
-      acc => acc.subtype === "checking" || acc.subtype === "savings"
-    );
-
-    if (!account) {
-      return res.status(400).json({
-        error: "No valid account found"
-      });
-    }
+    const account = accounts.data.accounts[0];
 
     await firestore.collection("users").doc(user_id).set({
 
       plaidAccessToken: access_token,
-      plaidItemId: item_id,
       plaidAccountId: account.account_id,
+      plaidItemId: item_id,
       bankConnected: true
 
     }, { merge: true });
 
-    res.json({
-      success: true
-    });
+    res.json({ success: true });
 
   } catch (err) {
 
     console.error("Exchange error:", err.response?.data || err);
 
     res.status(500).json({
-      error: "Token exchange failed"
+      error: err.response?.data || err.message
     });
 
   }
@@ -166,22 +153,13 @@ app.post("/deposit", async (req, res) => {
     const { user_id, amount } = req.body;
 
     const depositAmount = parseFloat(amount);
-
-    if (!user_id || isNaN(depositAmount) || depositAmount <= 0) {
-      return res.status(400).json({
-        error: "Invalid deposit request"
-      });
-    }
-
     const depositCents = Math.round(depositAmount * 100);
 
     const userRef = firestore.collection("users").doc(user_id);
     const userDoc = await userRef.get();
 
     if (!userDoc.exists) {
-      return res.status(404).json({
-        error: "User not found"
-      });
+      return res.status(404).json({ error: "User not found" });
     }
 
     const user = userDoc.data();
@@ -189,19 +167,12 @@ app.post("/deposit", async (req, res) => {
     const {
       plaidAccessToken,
       plaidAccountId,
-      email,
-      stripe_customer_id
+      email
     } = user;
 
-    if (!plaidAccessToken || !plaidAccountId) {
-      return res.status(400).json({
-        error: "Bank not connected"
-      });
-    }
+    /* Create Stripe customer */
 
-    /* Create Stripe customer if missing */
-
-    let customerId = stripe_customer_id;
+    let customerId = user.stripe_customer_id;
 
     if (!customerId) {
 
@@ -219,7 +190,7 @@ app.post("/deposit", async (req, res) => {
 
     /* Plaid → Stripe processor token */
 
-    const processor = await plaidClient.processorTokenCreate({
+    const processorResponse = await plaidClient.processorTokenCreate({
 
       access_token: plaidAccessToken,
       account_id: plaidAccountId,
@@ -227,13 +198,14 @@ app.post("/deposit", async (req, res) => {
 
     });
 
-    const stripeBankToken = processor.data.processor_token;
+    const stripeBankToken = processorResponse.data.processor_token;
 
-    /* Create Stripe PaymentMethod */
+    /* Create payment method */
 
     const paymentMethod = await stripe.paymentMethods.create({
 
       type: "us_bank_account",
+
       us_bank_account: {
         token: stripeBankToken
       },
@@ -244,41 +216,24 @@ app.post("/deposit", async (req, res) => {
 
     });
 
-    /* Create PaymentIntent */
+    /* Create payment intent */
 
     const paymentIntent = await stripe.paymentIntents.create({
 
       amount: depositCents,
       currency: "usd",
+
       customer: customerId,
+
       payment_method: paymentMethod.id,
+
       payment_method_types: ["us_bank_account"],
+
       confirm: true,
 
       metadata: {
         userId: user_id
-      },
-
-      mandate_data: {
-        customer_acceptance: {
-          type: "online",
-          online: {
-            ip_address: "127.0.0.1",
-            user_agent: "FlutterFlow"
-          }
-        }
       }
-
-    });
-
-    /* Save transaction */
-
-    await userRef.collection("transactions").add({
-
-      type: "deposit",
-      amount: depositAmount,
-      status: paymentIntent.status,
-      created: admin.firestore.FieldValue.serverTimestamp()
 
     });
 
@@ -295,87 +250,12 @@ app.post("/deposit", async (req, res) => {
 
     res.status(500).json({
       success: false,
-      error: err.message
+      error: err.response?.data || err.message
     });
 
   }
 
 });
-
-/* =========================
-   STRIPE WEBHOOK
-========================= */
-
-app.post(
-  "/stripe-webhook",
-  bodyParser.raw({ type: "application/json" }),
-  async (req, res) => {
-
-    let event;
-
-    try {
-
-      const sig = req.headers["stripe-signature"];
-
-      event = stripe.webhooks.constructEvent(
-        req.body,
-        sig,
-        stripeWebhookSecret
-      );
-
-    } catch (err) {
-
-      console.error("Webhook signature failed:", err.message);
-
-      return res.status(400).send("Webhook error");
-
-    }
-
-    const paymentIntent = event.data.object;
-    const userId = paymentIntent.metadata.userId;
-
-    const userRef = firestore.collection("users").doc(userId);
-
-    switch (event.type) {
-
-      case "payment_intent.processing":
-
-        await userRef.set({
-          pendingDeposit: paymentIntent.amount / 100
-        }, { merge: true });
-
-        break;
-
-      case "payment_intent.succeeded":
-
-        await userRef.set({
-
-          savingsBalance: admin.firestore.FieldValue.increment(
-            paymentIntent.amount / 100
-          ),
-
-          pendingDeposit: 0
-
-        }, { merge: true });
-
-        break;
-
-      case "payment_intent.payment_failed":
-
-        await userRef.set({
-          pendingDeposit: 0
-        }, { merge: true });
-
-        break;
-
-    }
-
-    res.json({
-      received: true
-    });
-
-  }
-);
 
 /* =========================
    SERVER
