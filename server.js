@@ -61,7 +61,6 @@ app.get("/", (req, res) => {
 /* =========================
    CREATE LINK TOKEN
 ========================= */
-
 app.post("/create_link_token", async (req, res) => {
 
   try {
@@ -70,10 +69,16 @@ app.post("/create_link_token", async (req, res) => {
 
     const response = await plaidClient.linkTokenCreate({
 
-      user: { client_user_id: user_id },
-      client_name: "FlutterFlow App",
+      user: {
+        client_user_id: user_id
+      },
+
+      client_name: "My App",
+
       products: ["auth"],
+
       country_codes: ["US"],
+
       language: "en"
 
     });
@@ -87,7 +92,7 @@ app.post("/create_link_token", async (req, res) => {
     console.error("Link token error:", err.response?.data || err);
 
     res.status(500).json({
-      error: "Failed to create link token"
+      error: err.response?.data || err.message
     });
 
   }
