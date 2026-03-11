@@ -4,13 +4,14 @@ const Stripe = require("stripe");
 const admin = require("firebase-admin");
 const { Configuration, PlaidApi, PlaidEnvironments } = require("plaid");
 const bodyParser = require("body-parser");
+const path = require("path");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 // Stripe webhook requires raw body
-app.use("/webhook", bodyParser.raw({ type: "application/json" }));
+app.use("/webhook", bodyParser.raw({ type: "application/json") }));
 
 /* =========================
    STRIPE
@@ -37,7 +38,7 @@ const firestore = admin.firestore();
 ========================= */
 const plaidClient = new PlaidApi(
   new Configuration({
-    basePath: PlaidEnvironments.sandbox, // switch to production in live
+    basePath: PlaidEnvironments.sandbox,
     baseOptions: {
       headers: {
         "PLAID-CLIENT-ID": process.env.PLAID_CLIENT_ID,
@@ -48,10 +49,14 @@ const plaidClient = new PlaidApi(
 );
 
 /* =========================
-   HEALTH CHECK
+   SERVE FRONTEND
 ========================= */
-app.get("/", (req, res) => {
-  res.send("Backend running");
+// Serve static files from 'public' folder
+app.use(express.static(path.join(__dirname, "public")));
+
+// For SPA routing: send index.html for all unmatched routes
+app.get("*", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
 /* =========================
@@ -115,16 +120,19 @@ app.post("/exchange_public_token", async (req, res) => {
 app.post("/deposit", async (req, res) => {
   try {
     const { user_id, amount, account_index = 0, idempotency_key } = req.body;
-
     const depositAmount = parseFloat(amount);
+
     if (isNaN(depositAmount) || depositAmount <= 0) {
       return res.status(400).json({ success: false, error: "Invalid amount" });
     }
-    const depositCents = Math.round(depositAmount * 100);
 
+    const depositCents = Math.round(depositAmount * 100);
     const userRef = firestore.collection("users").doc(user_id);
     const userDoc = await userRef.get();
-    if (!userDoc.exists) return res.status(404).json({ success: false, error: "User not found" });
+
+    if (!userDoc.exists) {
+      return res.status(404).json({ success: false, error: "User not found" });
+    }
 
     const user = userDoc.data();
     const { plaidAccessToken, email, stripe_customer_id, plaidAccounts } = user;
@@ -132,6 +140,7 @@ app.post("/deposit", async (req, res) => {
     if (!plaidAccessToken || !Array.isArray(plaidAccounts) || !plaidAccounts[account_index]) {
       return res.status(400).json({ success: false, error: "Bank account not found or not linked" });
     }
+
     const account = plaidAccounts[account_index];
 
     // Ensure Stripe customer exists
@@ -148,6 +157,7 @@ app.post("/deposit", async (req, res) => {
       account_id: account.account_id,
       processor: "stripe",
     });
+
     const stripeBankToken = processorResponse.data.processor_token;
 
     // Create payment method
@@ -157,7 +167,7 @@ app.post("/deposit", async (req, res) => {
       billing_details: { email },
     });
 
-    // Create payment intent with idempotency
+    // Create payment intent
     const paymentIntent = await stripe.paymentIntents.create(
       {
         amount: depositCents,
@@ -193,12 +203,10 @@ app.post("/webhook", async (req, res) => {
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
-  // Handle events
   switch (event.type) {
     case "payment_intent.succeeded": {
       const paymentIntent = event.data.object;
       const userId = paymentIntent.metadata.userId;
-
       await firestore.collection("users").doc(userId).set(
         {
           lastDeposit: {
@@ -216,7 +224,6 @@ app.post("/webhook", async (req, res) => {
     case "payment_intent.payment_failed": {
       const paymentIntent = event.data.object;
       const userId = paymentIntent.metadata.userId;
-
       await firestore.collection("users").doc(userId).set(
         {
           lastDeposit: {
@@ -240,7 +247,7 @@ app.post("/webhook", async (req, res) => {
 });
 
 /* =========================
-   SERVER
+   START SERVER
 ========================= */
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
