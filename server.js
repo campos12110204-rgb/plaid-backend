@@ -1,5 +1,5 @@
 /* =========================
-   server.js – Plaid + Stripe ACH Backend
+   PLAID + STRIPE ACH SERVER
 ========================= */
 
 const express = require("express");
@@ -13,19 +13,20 @@ const app = express();
 
 app.use(cors());
 app.use(express.json());
-app.use(express.static(__dirname)); // allows index.html
 app.use(express.static(__dirname));
 
+/* Stripe webhook raw body */
+app.use("/webhook", bodyParser.raw({ type: "application/json" }));
+
 /* =========================
-   ENV VARIABLES
-   STRIPE CONFIG
+   STRIPE
 ========================= */
 
 const stripe = new Stripe(process.env.STRIPE_SECRET);
-const stripeWebhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
 /* =========================
-   FIREBASE SETUP
+   FIREBASE
 ========================= */
 
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
@@ -38,10 +39,10 @@ admin.initializeApp({
   }),
 });
 
-const firestore = admin.firestore();
+const db = admin.firestore();
 
 /* =========================
-   PLAID CONFIG
+   PLAID
 ========================= */
 
 const plaidClient = new PlaidApi(
@@ -61,23 +62,8 @@ const plaidClient = new PlaidApi(
 ========================= */
 
 app.get("/", (req, res) => {
-  res.send("Plaid + Stripe backend running");
+  res.send("Plaid + Stripe ACH backend running");
 });
-
-/* =========================
-   PLAID SUCCESS PAGE
-========================= */
-
-app.get("/plaid-success", (req, res) =>
-  res.send(`
-    <html>
-      <body style="text-align:center;font-family:sans-serif">
-        <h2>✅ Bank Connected</h2>
-        <p>You may return to the app.</p>
-      </body>
-    </html>
-  `)
-);
 
 /* =========================
    CREATE LINK TOKEN
@@ -85,54 +71,59 @@ app.get("/plaid-success", (req, res) =>
 
 app.post("/create_link_token", async (req, res) => {
   try {
+
     const { user_id } = req.body;
 
     const response = await plaidClient.linkTokenCreate({
       user: { client_user_id: user_id },
-      client_name: "FlutterFlow App",
+      client_name: "Savings App",
       products: ["auth", "transactions"],
       country_codes: ["US"],
       language: "en",
-      redirect_uri: "https://plaid-backend-1.onrender.com/plaid-success",
     });
 
     res.json({ link_token: response.data.link_token });
+
   } catch (err) {
-    console.error("Plaid link token error:", err.response?.data || err.message);
-    res.status(500).json({ error: "Failed to create link token" });
+    console.error("Plaid error:", err);
+    res.status(500).json({ error: "Link token failed" });
   }
 });
 
 /* =========================
-   EXCHANGE PUBLIC TOKEN
+   EXCHANGE TOKEN
 ========================= */
 
 app.post("/exchange_public_token", async (req, res) => {
+
   try {
+
     const { public_token, user_id } = req.body;
 
     const response = await plaidClient.itemPublicTokenExchange({
       public_token,
     });
 
-    const access_token = response.data.access_token;
-    const item_id = response.data.item_id;
+    const accessToken = response.data.access_token;
+    const itemId = response.data.item_id;
 
-    await firestore.collection("users").doc(user_id).set(
+    await db.collection("users").doc(user_id).set(
       {
-        plaidAccessToken: access_token,
-        plaidItemId: item_id,
+        plaidAccessToken: accessToken,
+        plaidItemId: itemId,
         bankConnected: true,
-        bankConnectedAt: admin.firestore.FieldValue.serverTimestamp(),
+        connectedAt: admin.firestore.FieldValue.serverTimestamp(),
       },
       { merge: true }
     );
 
     res.json({ success: true });
+
   } catch (err) {
-    console.error("Exchange error:", err);
-    res.status(500).json({ error: "Token exchange failed" });
+    console.error("Token exchange error:", err);
+    res.status(500).json({ error: "Exchange failed" });
   }
+
 });
 
 /* =========================
@@ -140,55 +131,67 @@ app.post("/exchange_public_token", async (req, res) => {
 ========================= */
 
 app.post("/create-stripe-customer", async (req, res) => {
+
   try {
+
     const { user_id, email } = req.body;
 
     const customer = await stripe.customers.create({
-      email: email,
+      email,
     });
 
-    await firestore.collection("users").doc(user_id).set(
+    await db.collection("users").doc(user_id).set(
       {
-        stripe_customer_id: customer.id,
+        stripeCustomerId: customer.id,
       },
       { merge: true }
     );
 
     res.json({ customerId: customer.id });
+
   } catch (err) {
-    console.error("Stripe customer error:", err);
+
+    console.error(err);
     res.status(500).json({ error: "Customer creation failed" });
+
   }
+
 });
 
 /* =========================
-   DEPOSIT (PLAID → STRIPE ACH)
+   DEPOSIT MONEY (ACH)
 ========================= */
 
 app.post("/deposit", async (req, res) => {
+
   try {
+
     const { user_id, amount } = req.body;
 
-    const userDoc = await firestore.collection("users").doc(user_id).get();
+    const userDoc = await db.collection("users").doc(user_id).get();
 
     if (!userDoc.exists) {
       return res.status(404).json({ error: "User not found" });
     }
 
-    const userData = userDoc.data();
+    const user = userDoc.data();
 
-    const accessToken = userData.plaidAccessToken;
-    const stripeCustomerId = userData.stripe_customer_id;
+    const accessToken = user.plaidAccessToken;
+    const stripeCustomerId = user.stripeCustomerId;
 
     if (!accessToken || !stripeCustomerId) {
-      return res.status(400).json({ error: "User not connected properly" });
+      return res.status(400).json({ error: "User not connected" });
     }
+
+    /* Get bank account */
 
     const accounts = await plaidClient.accountsGet({
       access_token: accessToken,
     });
 
     const accountId = accounts.data.accounts[0].account_id;
+
+    /* Convert Plaid → Stripe */
 
     const processorToken = await plaidClient.processorTokenCreate({
       access_token: accessToken,
@@ -200,40 +203,50 @@ app.post("/deposit", async (req, res) => {
 
     const paymentMethod = await stripe.paymentMethods.create({
       type: "us_bank_account",
-      us_bank_account: {
-        token: bankToken,
-      },
+      us_bank_account: { token: bankToken },
     });
 
     await stripe.paymentMethods.attach(paymentMethod.id, {
       customer: stripeCustomerId,
     });
 
-    const paymentIntent = await stripe.paymentIntents.create({
-      amount: Math.round(Number(amount) * 100),
-      currency: "usd",
-      customer: stripeCustomerId,
-      payment_method: paymentMethod.id,
-      payment_method_types: ["us_bank_account"],
-      confirm: true,
-      metadata: {
-        userId: user_id,
-        depositAmount: amount,
+    /* Idempotency key prevents double withdrawal */
+
+    const paymentIntent = await stripe.paymentIntents.create(
+      {
+        amount: Math.round(amount * 100),
+        currency: "usd",
+        customer: stripeCustomerId,
+        payment_method: paymentMethod.id,
+        payment_method_types: ["us_bank_account"],
+        confirm: true,
+        metadata: {
+          userId: user_id,
+          depositAmount: amount,
+        },
       },
-    });
+      {
+        idempotencyKey: `${user_id}_${Date.now()}`,
+      }
+    );
 
     res.json({
       success: true,
       status: paymentIntent.status,
       paymentIntentId: paymentIntent.id,
     });
-  } catch (error) {
-    console.error("Deposit error:", error);
+
+  } catch (err) {
+
+    console.error("Deposit error:", err);
+
     res.status(500).json({
       error: "Deposit failed",
-      details: error.message,
+      details: err.message,
     });
+
   }
+
 });
 
 /* =========================
@@ -247,47 +260,50 @@ app.post("/webhook", async (req, res) => {
   let event;
 
   try {
+
     event = stripe.webhooks.constructEvent(
       req.body,
       sig,
-      stripeWebhookSecret
+      webhookSecret
     );
+
   } catch (err) {
-    console.error("Webhook signature failed:", err.message);
+
+    console.error("Webhook error:", err.message);
     return res.status(400).send(`Webhook Error: ${err.message}`);
+
   }
 
   const paymentIntent = event.data.object;
-
-  if (event.type === "payment_intent.processing") {
-    console.log("ACH processing:", paymentIntent.id);
-  }
 
   if (event.type === "payment_intent.succeeded") {
 
     const userId = paymentIntent.metadata.userId;
     const amount = paymentIntent.amount / 100;
 
-    await firestore.collection("users").doc(userId).update({
+    await db.collection("users").doc(userId).update({
       savingsBalance: admin.firestore.FieldValue.increment(amount),
     });
 
-    console.log("Savings updated:", userId, amount);
+    console.log("Balance updated:", userId, amount);
 
   }
 
   res.json({ received: true });
 
 });
+
 /* =========================
-   GET BALANCE
+   GET SAVINGS BALANCE
 ========================= */
 
 app.post("/get-balance", async (req, res) => {
+
   try {
+
     const { user_id } = req.body;
 
-    const doc = await firestore.collection("users").doc(user_id).get();
+    const doc = await db.collection("users").doc(user_id).get();
 
     if (!doc.exists) {
       return res.status(404).json({ error: "User not found" });
@@ -296,14 +312,14 @@ app.post("/get-balance", async (req, res) => {
     res.json({
       savingsBalance: doc.data().savingsBalance || 0,
     });
-  } catch (err) {
-    res.status(500).json({ error: "Failed to get balance" });
-  }
-});
 
-/* =========================
-   START SERVER
-========================= */
+  } catch (err) {
+
+    res.status(500).json({ error: "Balance fetch failed" });
+
+  }
+
+});
 
 /* =========================
    START SERVER
