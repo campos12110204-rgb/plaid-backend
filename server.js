@@ -3,10 +3,14 @@ const cors = require("cors");
 const Stripe = require("stripe");
 const admin = require("firebase-admin");
 const { Configuration, PlaidApi, PlaidEnvironments } = require("plaid");
+const bodyParser = require("body-parser");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// Stripe webhook requires raw body
+app.use("/webhook", bodyParser.raw({ type: "application/json" }));
 
 /* =========================
    STRIPE
@@ -33,7 +37,7 @@ const firestore = admin.firestore();
 ========================= */
 const plaidClient = new PlaidApi(
   new Configuration({
-    basePath: PlaidEnvironments.sandbox, // switch to production for live
+    basePath: PlaidEnvironments.sandbox, // switch to production in live
     baseOptions: {
       headers: {
         "PLAID-CLIENT-ID": process.env.PLAID_CLIENT_ID,
@@ -106,7 +110,7 @@ app.post("/exchange_public_token", async (req, res) => {
 });
 
 /* =========================
-   DEPOSIT (Optimized)
+   DEPOSIT
 ========================= */
 app.post("/deposit", async (req, res) => {
   try {
@@ -175,7 +179,68 @@ app.post("/deposit", async (req, res) => {
 });
 
 /* =========================
+   STRIPE WEBHOOK
+========================= */
+app.post("/webhook", async (req, res) => {
+  const sig = req.headers["stripe-signature"];
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+
+  let event;
+  try {
+    event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
+  } catch (err) {
+    console.error("Webhook signature verification failed.", err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  // Handle events
+  switch (event.type) {
+    case "payment_intent.succeeded": {
+      const paymentIntent = event.data.object;
+      const userId = paymentIntent.metadata.userId;
+
+      await firestore.collection("users").doc(userId).set(
+        {
+          lastDeposit: {
+            amount: paymentIntent.amount / 100,
+            currency: paymentIntent.currency,
+            status: "succeeded",
+            timestamp: admin.firestore.FieldValue.serverTimestamp(),
+          },
+        },
+        { merge: true }
+      );
+      console.log("Deposit succeeded for user:", userId);
+      break;
+    }
+    case "payment_intent.payment_failed": {
+      const paymentIntent = event.data.object;
+      const userId = paymentIntent.metadata.userId;
+
+      await firestore.collection("users").doc(userId).set(
+        {
+          lastDeposit: {
+            amount: paymentIntent.amount / 100,
+            currency: paymentIntent.currency,
+            status: "failed",
+            failure_message: paymentIntent.last_payment_error?.message || "Unknown",
+            timestamp: admin.firestore.FieldValue.serverTimestamp(),
+          },
+        },
+        { merge: true }
+      );
+      console.log("Deposit failed for user:", userId);
+      break;
+    }
+    default:
+      console.log(`Unhandled event type ${event.type}`);
+  }
+
+  res.json({ received: true });
+});
+
+/* =========================
    SERVER
 ========================= */
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log("Server running on port", PORT));
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
