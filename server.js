@@ -238,32 +238,47 @@ app.post("/deposit", async (req, res) => {
 
 /* =========================
    STRIPE WEBHOOK
-   STRIPE WEBHOOK (RAW BODY FIRST)
 ========================= */
 
-app.post(
-@@ -260,52 +46,4 @@
-    const paymentIntent = event.data.object;
+app.post("/webhook", async (req, res) => {
 
-    if (event.type === "payment_intent.processing") {
-      console.log("ACH processing:", paymentIntent.id);
-    }
+  const sig = req.headers["stripe-signature"];
 
-    if (event.type === "payment_intent.succeeded") {
-      const userId = paymentIntent.metadata.userId;
-      const amount = paymentIntent.amount / 100;
+  let event;
 
-      await firestore.collection("users").doc(userId).update({
-        savingsBalance: admin.firestore.FieldValue.increment(amount),
-      });
-
-      console.log("Savings updated:", userId, amount);
-    }
-
-    res.status(200).json({ received: true });
+  try {
+    event = stripe.webhooks.constructEvent(
+      req.body,
+      sig,
+      stripeWebhookSecret
+    );
+  } catch (err) {
+    console.error("Webhook signature failed:", err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
   }
-);
 
+  const paymentIntent = event.data.object;
+
+  if (event.type === "payment_intent.processing") {
+    console.log("ACH processing:", paymentIntent.id);
+  }
+
+  if (event.type === "payment_intent.succeeded") {
+
+    const userId = paymentIntent.metadata.userId;
+    const amount = paymentIntent.amount / 100;
+
+    await firestore.collection("users").doc(userId).update({
+      savingsBalance: admin.firestore.FieldValue.increment(amount),
+    });
+
+    console.log("Savings updated:", userId, amount);
+
+  }
+
+  res.json({ received: true });
+
+});
 /* =========================
    GET BALANCE
 ========================= */
@@ -290,9 +305,12 @@ app.post("/get-balance", async (req, res) => {
    START SERVER
 ========================= */
 
-const PORT = process.env.PORT || 3000;
+/* =========================
+   START SERVER
+========================= */
+
+const PORT = process.env.PORT || 10000;
 
 app.listen(PORT, () => {
   console.log("Server running on port", PORT);
 });
-      console.log("ACH processing:",
