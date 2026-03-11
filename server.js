@@ -11,16 +11,16 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
 
-/* ======================
+/* =========================
    STRIPE
-====================== */
+========================= */
 
 const stripe = new Stripe(process.env.STRIPE_SECRET);
 const stripeWebhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
-/* ======================
+/* =========================
    FIREBASE
-====================== */
+========================= */
 
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
 
@@ -34,9 +34,9 @@ admin.initializeApp({
 
 const firestore = admin.firestore();
 
-/* ======================
+/* =========================
    PLAID
-====================== */
+========================= */
 
 const plaidClient = new PlaidApi(
   new Configuration({
@@ -50,53 +50,53 @@ const plaidClient = new PlaidApi(
   })
 );
 
-/* ======================
+/* =========================
    HEALTH CHECK
-====================== */
+========================= */
 
 app.get("/", (req, res) => {
-  res.send("Plaid + Stripe backend running");
+  res.send("Backend running");
 });
 
-/* ======================
-   CREATE PLAID LINK TOKEN
-====================== */
+/* =========================
+   CREATE LINK TOKEN
+========================= */
 
 app.post("/create_link_token", async (req, res) => {
+
   try {
 
     const { user_id } = req.body;
 
     const response = await plaidClient.linkTokenCreate({
+
       user: { client_user_id: user_id },
       client_name: "FlutterFlow App",
-      products: ["auth", "identity"],
-      required_if_supported_products: ["processor"],
+      products: ["auth"],
       country_codes: ["US"],
-      language: "en",
-      account_filters: {
-        depository: {
-          account_subtypes: ["checking", "savings"]
-        }
-      }
+      language: "en"
+
     });
 
-    res.json({ link_token: response.data.link_token });
+    res.json({
+      link_token: response.data.link_token
+    });
 
   } catch (err) {
 
-    console.error("Plaid link token error:", err);
+    console.error("Link token error:", err.response?.data || err);
 
     res.status(500).json({
       error: "Failed to create link token"
     });
 
   }
+
 });
 
-/* ======================
+/* =========================
    EXCHANGE PUBLIC TOKEN
-====================== */
+========================= */
 
 app.post("/exchange_public_token", async (req, res) => {
 
@@ -116,12 +116,12 @@ app.post("/exchange_public_token", async (req, res) => {
     });
 
     const account = accounts.data.accounts.find(
-      a => a.subtype === "checking" || a.subtype === "savings"
+      acc => acc.subtype === "checking" || acc.subtype === "savings"
     );
 
     if (!account) {
       return res.status(400).json({
-        error: "No checking or savings account found"
+        error: "No valid account found"
       });
     }
 
@@ -140,7 +140,7 @@ app.post("/exchange_public_token", async (req, res) => {
 
   } catch (err) {
 
-    console.error("Exchange error:", err);
+    console.error("Exchange error:", err.response?.data || err);
 
     res.status(500).json({
       error: "Token exchange failed"
@@ -150,9 +150,9 @@ app.post("/exchange_public_token", async (req, res) => {
 
 });
 
-/* ======================
+/* =========================
    DEPOSIT
-====================== */
+========================= */
 
 app.post("/deposit", async (req, res) => {
 
@@ -160,17 +160,11 @@ app.post("/deposit", async (req, res) => {
 
     const { user_id, amount } = req.body;
 
-    if (!user_id || amount === undefined) {
-      return res.status(400).json({
-        error: "Missing parameters"
-      });
-    }
-
     const depositAmount = parseFloat(amount);
 
-    if (depositAmount <= 0) {
+    if (!user_id || isNaN(depositAmount) || depositAmount <= 0) {
       return res.status(400).json({
-        error: "Invalid amount"
+        error: "Invalid deposit request"
       });
     }
 
@@ -221,9 +215,11 @@ app.post("/deposit", async (req, res) => {
     /* Plaid → Stripe processor token */
 
     const processor = await plaidClient.processorTokenCreate({
+
       access_token: plaidAccessToken,
       account_id: plaidAccountId,
       processor: "stripe"
+
     });
 
     const stripeBankToken = processor.data.processor_token;
@@ -231,13 +227,16 @@ app.post("/deposit", async (req, res) => {
     /* Create Stripe PaymentMethod */
 
     const paymentMethod = await stripe.paymentMethods.create({
+
       type: "us_bank_account",
       us_bank_account: {
         token: stripeBankToken
       },
+
       billing_details: {
         email
       }
+
     });
 
     /* Create PaymentIntent */
@@ -287,7 +286,7 @@ app.post("/deposit", async (req, res) => {
 
   } catch (err) {
 
-    console.error("Deposit error:", err);
+    console.error("Deposit error:", err.response?.data || err);
 
     res.status(500).json({
       success: false,
@@ -298,9 +297,9 @@ app.post("/deposit", async (req, res) => {
 
 });
 
-/* ======================
+/* =========================
    STRIPE WEBHOOK
-====================== */
+========================= */
 
 app.post(
   "/stripe-webhook",
@@ -373,9 +372,9 @@ app.post(
   }
 );
 
-/* ======================
+/* =========================
    SERVER
-====================== */
+========================= */
 
 const PORT = process.env.PORT || 10000;
 
