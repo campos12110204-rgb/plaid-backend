@@ -11,13 +11,11 @@ app.use(express.json());
 /* =========================
    STRIPE
 ========================= */
-
 const stripe = new Stripe(process.env.STRIPE_SECRET);
 
 /* =========================
    FIREBASE
 ========================= */
-
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
 
 admin.initializeApp({
@@ -33,10 +31,9 @@ const firestore = admin.firestore();
 /* =========================
    PLAID
 ========================= */
-
 const plaidClient = new PlaidApi(
   new Configuration({
-    basePath: PlaidEnvironments.sandbox,
+    basePath: PlaidEnvironments.sandbox, // switch to production for live
     baseOptions: {
       headers: {
         "PLAID-CLIENT-ID": process.env.PLAID_CLIENT_ID,
@@ -47,9 +44,8 @@ const plaidClient = new PlaidApi(
 );
 
 /* =========================
-   HEALTH
+   HEALTH CHECK
 ========================= */
-
 app.get("/", (req, res) => {
   res.send("Backend running");
 });
@@ -57,212 +53,129 @@ app.get("/", (req, res) => {
 /* =========================
    CREATE LINK TOKEN
 ========================= */
-
 app.post("/create_link_token", async (req, res) => {
-
   try {
-
     const { user_id } = req.body;
-
     const response = await plaidClient.linkTokenCreate({
-
-      user: {
-        client_user_id: user_id,
-      },
-
+      user: { client_user_id: user_id },
       client_name: "Savings App",
-
       products: ["auth"],
-
       country_codes: ["US"],
-
-      language: "en"
-
+      language: "en",
     });
 
-    res.json({
-      link_token: response.data.link_token
-    });
-
+    res.json({ link_token: response.data.link_token });
   } catch (err) {
-
     console.error("Link token error:", err.response?.data || err);
-
-    res.status(500).json({
-      error: err.response?.data || err.message
-    });
-
+    res.status(500).json({ error: err.response?.data || err.message });
   }
-
 });
 
 /* =========================
-   EXCHANGE TOKEN
+   EXCHANGE PUBLIC TOKEN
 ========================= */
-
 app.post("/exchange_public_token", async (req, res) => {
-
   try {
-
     const { public_token, user_id } = req.body;
-
-    const exchange = await plaidClient.itemPublicTokenExchange({
-      public_token
-    });
-
+    const exchange = await plaidClient.itemPublicTokenExchange({ public_token });
     const access_token = exchange.data.access_token;
     const item_id = exchange.data.item_id;
 
-    const accounts = await plaidClient.accountsGet({
-      access_token
-    });
+    const accountsResponse = await plaidClient.accountsGet({ access_token });
+    const accounts = accountsResponse.data.accounts.map((acct) => ({
+      account_id: acct.account_id,
+      name: acct.name,
+      mask: acct.mask,
+    }));
 
-    const account = accounts.data.accounts[0];
-
-    await firestore.collection("users").doc(user_id).set({
-
-      plaidAccessToken: access_token,
-      plaidAccountId: account.account_id,
-      plaidItemId: item_id,
-      bankConnected: true
-
-    }, { merge: true });
+    await firestore.collection("users").doc(user_id).set(
+      {
+        plaidAccessToken: access_token,
+        plaidItemId: item_id,
+        plaidAccounts: accounts,
+        bankConnected: true,
+      },
+      { merge: true }
+    );
 
     res.json({ success: true });
-
   } catch (err) {
-
     console.error("Exchange error:", err.response?.data || err);
-
-    res.status(500).json({
-      error: err.response?.data || err.message
-    });
-
+    res.status(500).json({ error: err.response?.data || err.message });
   }
-
 });
 
 /* =========================
-   DEPOSIT
+   DEPOSIT (Optimized)
 ========================= */
-
 app.post("/deposit", async (req, res) => {
-
   try {
-
-    const { user_id, amount } = req.body;
+    const { user_id, amount, account_index = 0, idempotency_key } = req.body;
 
     const depositAmount = parseFloat(amount);
+    if (isNaN(depositAmount) || depositAmount <= 0) {
+      return res.status(400).json({ success: false, error: "Invalid amount" });
+    }
     const depositCents = Math.round(depositAmount * 100);
 
     const userRef = firestore.collection("users").doc(user_id);
     const userDoc = await userRef.get();
-
-    if (!userDoc.exists) {
-      return res.status(404).json({ error: "User not found" });
-    }
+    if (!userDoc.exists) return res.status(404).json({ success: false, error: "User not found" });
 
     const user = userDoc.data();
+    const { plaidAccessToken, email, stripe_customer_id, plaidAccounts } = user;
 
-    const {
-      plaidAccessToken,
-      plaidAccountId,
-      email
-    } = user;
+    if (!plaidAccessToken || !Array.isArray(plaidAccounts) || !plaidAccounts[account_index]) {
+      return res.status(400).json({ success: false, error: "Bank account not found or not linked" });
+    }
+    const account = plaidAccounts[account_index];
 
-    /* Create Stripe customer */
-
-    let customerId = user.stripe_customer_id;
-
+    // Ensure Stripe customer exists
+    let customerId = stripe_customer_id;
     if (!customerId) {
-
-      const customer = await stripe.customers.create({
-        email
-      });
-
+      const customer = await stripe.customers.create({ email });
       customerId = customer.id;
-
-      await userRef.set({
-        stripe_customer_id: customerId
-      }, { merge: true });
-
+      await userRef.set({ stripe_customer_id: customerId }, { merge: true });
     }
 
-    /* Plaid → Stripe processor token */
-
+    // Plaid → Stripe processor token
     const processorResponse = await plaidClient.processorTokenCreate({
-
       access_token: plaidAccessToken,
-      account_id: plaidAccountId,
-      processor: "stripe"
-
+      account_id: account.account_id,
+      processor: "stripe",
     });
-
     const stripeBankToken = processorResponse.data.processor_token;
 
-    /* Create payment method */
-
+    // Create payment method
     const paymentMethod = await stripe.paymentMethods.create({
-
       type: "us_bank_account",
+      us_bank_account: { token: stripeBankToken },
+      billing_details: { email },
+    });
 
-      us_bank_account: {
-        token: stripeBankToken
+    // Create payment intent with idempotency
+    const paymentIntent = await stripe.paymentIntents.create(
+      {
+        amount: depositCents,
+        currency: "usd",
+        customer: customerId,
+        payment_method: paymentMethod.id,
+        payment_method_types: ["us_bank_account"],
+        confirm: true,
+        metadata: { userId: user_id },
       },
+      { idempotencyKey: idempotency_key || `deposit_${user_id}_${Date.now()}` }
+    );
 
-      billing_details: {
-        email
-      }
-
-    });
-
-    /* Create payment intent */
-
-    const paymentIntent = await stripe.paymentIntents.create({
-
-      amount: depositCents,
-      currency: "usd",
-
-      customer: customerId,
-
-      payment_method: paymentMethod.id,
-
-      payment_method_types: ["us_bank_account"],
-
-      confirm: true,
-
-      metadata: {
-        userId: user_id
-      }
-
-    });
-
-    res.json({
-
-      success: true,
-      status: paymentIntent.status
-
-    });
-
+    res.json({ success: true, status: paymentIntent.status });
   } catch (err) {
-
     console.error("Deposit error:", err.response?.data || err);
-
-    res.status(500).json({
-      success: false,
-      error: err.response?.data || err.message
-    });
-
+    res.status(500).json({ success: false, error: err.response?.data || err.message });
   }
-
 });
 
 /* =========================
    SERVER
 ========================= */
-
 const PORT = process.env.PORT || 10000;
-
-app.listen(PORT, () => {
-  console.log("Server running on port", PORT);
-});
+app.listen(PORT, () => console.log("Server running on port", PORT));
