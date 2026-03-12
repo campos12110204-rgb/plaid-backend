@@ -100,16 +100,20 @@ app.post("/exchange_public_token", async (req, res) => {
     const accessToken = response.data.access_token;
     const itemId = response.data.item_id;
 
-    // Fetch user doc to check for existing Stripe customer
+    // Fetch user doc
     const userRef = db.collection("users").doc(user_id);
     const userDoc = await userRef.get();
-    let stripeCustomerId = userDoc.data()?.stripeCustomerId;
-    let userEmail = email || userDoc.data()?.email;
 
+    // Auto-use Firestore email if not provided in request
+    const userEmail = email || userDoc.data()?.email;
+
+    if (!userEmail) {
+      return res.status(400).json({ error: "Email required to create Stripe customer" });
+    }
+
+    // Create Stripe customer if missing
+    let stripeCustomerId = userDoc.data()?.stripeCustomerId;
     if (!stripeCustomerId) {
-      if (!userEmail) {
-        return res.status(400).json({ error: "Email required to create Stripe customer" });
-      }
       const customer = await stripe.customers.create({ email: userEmail });
       stripeCustomerId = customer.id;
     }
