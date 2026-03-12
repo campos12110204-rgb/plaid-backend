@@ -6,90 +6,88 @@
   <style>
     body { font-family: sans-serif; text-align: center; margin-top: 50px; }
     #status { margin-top: 20px; font-size: 16px; }
-    button { padding: 12px 24px; font-size: 16px; }
   </style>
 </head>
 <body>
 
   <h2>Connect your bank</h2>
-  <button id="connectBtn">Connect Bank</button>
-  <div id="status">Bank not connected yet</div>
+  <div id="status">Loading...</div>
 
 <script>
-const BACKEND_URL = "https://plaid-backend-1.onrender.com"; // Render backend
+const BACKEND_URL = "https://plaid-backend-1.onrender.com"; // Your backend URL
 
 // Get user_id from URL parameters
 const params = new URLSearchParams(window.location.search);
 const user_id = params.get("user_id");
-console.log("User ID from URL:", user_id);
+const statusDiv = document.getElementById("status");
 
 if (!user_id) {
   alert("ERROR: user_id missing!");
-}
-
-const statusDiv = document.getElementById("status");
-
-document.getElementById('connectBtn').addEventListener('click', async () => {
+  statusDiv.innerText = "User ID missing!";
+} else {
   statusDiv.innerText = "Fetching link token…";
 
-  try {
-    // 1️⃣ Get link token from backend
-    const linkTokenRes = await fetch(`${BACKEND_URL}/create_link_token`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user_id })
-    });
-    const linkTokenData = await linkTokenRes.json();
+  (async function() {
+    try {
+      // 1️⃣ Get link token from backend
+      const linkTokenRes = await fetch(`${BACKEND_URL}/create_link_token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id })
+      });
+      const linkTokenData = await linkTokenRes.json();
 
-    if (!linkTokenData.link_token) {
-      console.error("No link token returned:", linkTokenData);
-      statusDiv.innerText = "Failed to fetch link token";
-      return;
-    }
-
-    statusDiv.innerText = "Opening Plaid…";
-
-    // 2️⃣ Initialize Plaid Link
-    const handler = Plaid.create({
-      token: linkTokenData.link_token,
-
-      onSuccess: async function(public_token) {
-        statusDiv.innerText = "Bank connected! Saving…";
-
-        try {
-          // 3️⃣ Exchange public token with backend
-          const exchangeRes = await fetch(`${BACKEND_URL}/exchange_public_token`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ public_token, user_id })
-          });
-
-          const exchangeData = await exchangeRes.json();
-          console.log("Exchange response:", exchangeData);
-
-          if (exchangeData.success) {
-            statusDiv.innerHTML = "✅ Bank connected successfully!<br>You may now return to the app.";
-          } else {
-            statusDiv.innerText = "Failed to connect bank: " + (exchangeData.error || "Unknown error");
-          }
-        } catch (err) {
-          console.error("Failed to exchange token:", err);
-          statusDiv.innerText = "Failed to connect bank";
-        }
-      },
-
-      onExit: function(err, metadata) {
-        console.log("User exited Plaid Link", err, metadata);
-        statusDiv.innerText = "Plaid exited. Bank not connected.";
+      if (!linkTokenData.link_token) {
+        console.error("No link token returned:", linkTokenData);
+        statusDiv.innerText = "Failed to fetch link token";
+        return;
       }
-    });
 
-    handler.open();
-  } catch (err) {
-    console.error("Failed to fetch link token:", err);
-    statusDiv.innerText = "Failed to fetch link token";
-  }
-});
+      statusDiv.innerText = "Opening Plaid…";
+
+      // 2️⃣ Initialize Plaid Link
+      const handler = Plaid.create({
+        token: linkTokenData.link_token,
+
+        onSuccess: async function(public_token) {
+          statusDiv.innerText = "Bank connected! Saving…";
+
+          try {
+            // 3️⃣ Exchange public token with backend
+            const exchangeRes = await fetch(`${BACKEND_URL}/exchange_public_token`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ public_token, user_id })
+            });
+
+            const exchangeData = await exchangeRes.json();
+            console.log("Exchange response:", exchangeData);
+
+            if (exchangeData.success) {
+              statusDiv.innerHTML = "✅ Bank connected successfully!<br>You may now return to the app.";
+            } else {
+              statusDiv.innerText = "Failed to connect bank: " + (exchangeData.error || "Unknown error");
+            }
+          } catch (err) {
+            console.error("Failed to exchange token:", err);
+            statusDiv.innerText = "Failed to connect bank";
+          }
+        },
+
+        onExit: function(err, metadata) {
+          console.log("User exited Plaid Link", err, metadata);
+          statusDiv.innerText = "Plaid exited. Bank not connected.";
+        }
+      });
+
+      handler.open();
+
+    } catch (err) {
+      console.error("Failed to fetch link token:", err);
+      statusDiv.innerText = "Failed to fetch link token";
+    }
+  })();
+}
 </script>
 </body>
 </html>
