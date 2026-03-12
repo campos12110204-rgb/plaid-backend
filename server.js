@@ -91,31 +91,31 @@ app.post("/create_link_token", async (req, res) => {
 /* =========================
    EXCHANGE TOKEN & AUTO-CREATE STRIPE CUSTOMER
 ========================= */
-
 app.post("/exchange_public_token", async (req, res) => {
   try {
     const { public_token, user_id, email } = req.body;
 
     // Exchange Plaid public token
-    const response = await plaidClient.itemPublicTokenExchange({
-      public_token,
-    });
-
+    const response = await plaidClient.itemPublicTokenExchange({ public_token });
     const accessToken = response.data.access_token;
     const itemId = response.data.item_id;
 
     // Fetch user doc to check for existing Stripe customer
-    const userDoc = await db.collection("users").doc(user_id).get();
+    const userRef = db.collection("users").doc(user_id);
+    const userDoc = await userRef.get();
     let stripeCustomerId = userDoc.data()?.stripeCustomerId;
+    let userEmail = email || userDoc.data()?.email;
 
-    // Create Stripe customer if not exists
     if (!stripeCustomerId) {
-      const customer = await stripe.customers.create({ email });
+      if (!userEmail) {
+        return res.status(400).json({ error: "Email required to create Stripe customer" });
+      }
+      const customer = await stripe.customers.create({ email: userEmail });
       stripeCustomerId = customer.id;
     }
 
     // Save Plaid info + Stripe customer ID
-    await db.collection("users").doc(user_id).set(
+    await userRef.set(
       {
         plaidAccessToken: accessToken,
         plaidItemId: itemId,
