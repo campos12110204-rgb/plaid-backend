@@ -145,8 +145,21 @@ app.post("/deposit", async (req, res) => {
   try {
     const { user_id, amount } = req.body;
 
-    const userDoc = await db.collection("users").doc(user_id).get();
+    console.log("Deposit called with user_id:", user_id, "amount:", amount);
 
+    // 1️⃣ Validate user_id
+    if (!user_id || typeof user_id !== "string" || user_id.trim() === "") {
+      return res.status(400).json({ error: "Missing or invalid user_id" });
+    }
+
+    // 2️⃣ Validate amount
+    const amountNum = parseFloat(amount);
+    if (isNaN(amountNum) || amountNum <= 0) {
+      return res.status(400).json({ error: "Invalid deposit amount" });
+    }
+
+    // 3️⃣ Fetch user document
+    const userDoc = await db.collection("users").doc(user_id).get();
     if (!userDoc.exists) {
       return res.status(404).json({ error: "User not found" });
     }
@@ -159,11 +172,14 @@ app.post("/deposit", async (req, res) => {
       return res.status(400).json({ error: "User not connected" });
     }
 
-    // Get bank account from Plaid
+    // 4️⃣ Get Plaid bank account
     const accounts = await plaidClient.accountsGet({ access_token: accessToken });
+    if (!accounts.data.accounts || accounts.data.accounts.length === 0) {
+      return res.status(400).json({ error: "No bank account found" });
+    }
     const accountId = accounts.data.accounts[0].account_id;
 
-    // Convert Plaid → Stripe token
+    // 5️⃣ Create Plaid → Stripe token
     const processorToken = await plaidClient.processorTokenCreate({
       access_token: accessToken,
       account_id: accountId,
@@ -171,34 +187,37 @@ app.post("/deposit", async (req, res) => {
     });
     const bankToken = processorToken.data.processor_token;
 
+    // 6️⃣ Create Stripe PaymentMethod
     const paymentMethod = await stripe.paymentMethods.create({
       type: "us_bank_account",
       us_bank_account: { token: bankToken },
     });
-
     await stripe.paymentMethods.attach(paymentMethod.id, { customer: stripeCustomerId });
 
-    // Create PaymentIntent
+    // 7️⃣ Create Stripe PaymentIntent (Stripe expects integer cents)
     const paymentIntent = await stripe.paymentIntents.create(
       {
-        amount: Math.round(amount * 100),
+        amount: Math.round(amountNum * 100), // convert dollars to cents
         currency: "usd",
         customer: stripeCustomerId,
         payment_method: paymentMethod.id,
         payment_method_types: ["us_bank_account"],
         confirm: true,
-        metadata: { userId: user_id, depositAmount: amount },
+        metadata: { userId: user_id, depositAmount: amountNum },
       },
       { idempotencyKey: `${user_id}_${Date.now()}` }
     );
 
-    res.json({ success: true, status: paymentIntent.status, paymentIntentId: paymentIntent.id });
+    res.json({
+      success: true,
+      status: paymentIntent.status,
+      paymentIntentId: paymentIntent.id,
+    });
   } catch (err) {
     console.error("Deposit error:", err);
     res.status(500).json({ error: "Deposit failed", details: err.message });
   }
 });
-
 /* =========================
    STRIPE WEBHOOK
 ========================= */
