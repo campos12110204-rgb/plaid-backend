@@ -27,6 +27,7 @@ const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
    FIREBASE
 ========================= */
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+
 admin.initializeApp({
   credential: admin.credential.cert({
     projectId: serviceAccount.project_id,
@@ -34,6 +35,7 @@ admin.initializeApp({
     privateKey: serviceAccount.private_key.replace(/\\n/g, "\n"),
   }),
 });
+
 const db = admin.firestore();
 
 /* =========================
@@ -80,6 +82,7 @@ app.post("/create_link_token", async (req, res) => {
 
 /* =========================
    EXCHANGE PUBLIC TOKEN
+   & Initialize savingsBalance
 ========================= */
 app.post("/exchange_public_token", async (req, res) => {
   try {
@@ -105,7 +108,7 @@ app.post("/exchange_public_token", async (req, res) => {
       stripeCustomerId = customer.id;
     }
 
-    // Save Plaid info + Stripe customer ID
+    // Save Plaid info + Stripe customer ID + initialize savingsBalance if not exists
     await userRef.set(
       {
         plaidAccessToken: accessToken,
@@ -113,6 +116,7 @@ app.post("/exchange_public_token", async (req, res) => {
         bankConnected: true,
         stripeCustomerId,
         connectedAt: admin.firestore.FieldValue.serverTimestamp(),
+        savingsBalance: userDoc.data()?.savingsBalance || 0, // initialize to 0 if missing
       },
       { merge: true }
     );
@@ -131,7 +135,7 @@ app.post("/deposit", async (req, res) => {
   try {
     const { user_id, amount } = req.body;
 
-    // 1️⃣ Validate input
+    // Validate input
     if (!user_id || typeof user_id !== "string" || user_id.trim() === "") {
       return res.status(400).json({ error: "Missing or invalid user_id" });
     }
@@ -141,7 +145,7 @@ app.post("/deposit", async (req, res) => {
       return res.status(400).json({ error: "Invalid deposit amount" });
     }
 
-    // 2️⃣ Fetch user
+    // Fetch user
     const userDoc = await db.collection("users").doc(user_id).get();
     if (!userDoc.exists) return res.status(404).json({ error: "User not found" });
 
@@ -153,7 +157,7 @@ app.post("/deposit", async (req, res) => {
       return res.status(400).json({ error: "User not connected to Stripe or Plaid" });
     }
 
-    // 3️⃣ Check for existing Stripe bank PaymentMethod
+    // Check for existing Stripe bank PaymentMethod
     const paymentMethods = await stripe.paymentMethods.list({
       customer: stripeCustomerId,
       type: "us_bank_account",
@@ -163,14 +167,14 @@ app.post("/deposit", async (req, res) => {
     if (paymentMethods.data.length > 0) {
       paymentMethodId = paymentMethods.data[0].id; // reuse existing
     } else {
-      // 4️⃣ Get Plaid bank account
+      // Get Plaid bank account
       const accountsResponse = await plaidClient.accountsGet({ access_token: accessToken });
       if (!accountsResponse.data.accounts || accountsResponse.data.accounts.length === 0) {
         return res.status(400).json({ error: "No bank account found in Plaid" });
       }
       const accountId = accountsResponse.data.accounts[0].account_id;
 
-      // 5️⃣ Create Plaid → Stripe processor token
+      // Create Plaid → Stripe processor token
       const processorTokenRes = await plaidClient.processorTokenCreate({
         access_token: accessToken,
         account_id: accountId,
@@ -179,7 +183,7 @@ app.post("/deposit", async (req, res) => {
 
       const bankToken = processorTokenRes.data.processor_token;
 
-      // 6️⃣ Create Stripe PaymentMethod
+      // Create Stripe PaymentMethod
       const paymentMethod = await stripe.paymentMethods.create({
         type: "us_bank_account",
         us_bank_account: { token: bankToken },
@@ -188,7 +192,7 @@ app.post("/deposit", async (req, res) => {
       paymentMethodId = paymentMethod.id;
     }
 
-    // 7️⃣ Create Stripe PaymentIntent
+    // Create Stripe PaymentIntent
     const paymentIntent = await stripe.paymentIntents.create(
       {
         amount: Math.round(amountNum * 100), // dollars → cents
@@ -233,6 +237,7 @@ app.post("/webhook", async (req, res) => {
     const userId = paymentIntent.metadata.userId;
     const amount = paymentIntent.amount / 100;
 
+    // Increment savingsBalance
     await db.collection("users").doc(userId).update({
       savingsBalance: admin.firestore.FieldValue.increment(amount),
     });
@@ -254,6 +259,7 @@ app.post("/get-balance", async (req, res) => {
 
     res.json({ savingsBalance: doc.data().savingsBalance || 0 });
   } catch (err) {
+    console.error("Balance fetch failed:", err);
     res.status(500).json({ error: "Balance fetch failed" });
   }
 });
